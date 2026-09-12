@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+    '') ;;
+    -h|--help)
+        printf 'Usage: ./uninstall\n\nRemove the extension, backend binaries, and user service.\nSaved settings and the source project are kept. Run without sudo.\n'
+        exit 0
+        ;;
+    *) printf 'Usage: ./uninstall\n' >&2; exit 2 ;;
+esac
+if (($#)); then
+    printf 'Usage: ./uninstall\n' >&2
+    exit 2
+fi
+if ((EUID == 0)); then
+    printf 'Run uninstall as your desktop user, without sudo.\n' >&2
+    exit 1
+fi
+
+source "$(dirname -- "${BASH_SOURCE[0]}")/scripts/common.sh"
+require_commands gnome-extensions systemctl flock readlink
+if ! systemctl --user show-environment >/dev/null; then
+    printf 'Cannot reach the user session. Run uninstall from a terminal in your desktop session.\n' >&2
+    exit 1
+fi
+mkdir -p -- "$project_dir/build"
+exec 9>"$project_dir/build/setup.lock"
+if ! flock -n 9; then
+    printf 'Another setup or uninstall is running for this checkout.\n' >&2
+    exit 1
+fi
+
+service=airpods-gnome.service
+unit_file="$HOME/.local/share/systemd/user/$service"
+startup_link="$HOME/.config/systemd/user/graphical-session.target.wants/$service"
+control_alias="$HOME/.local/bin/librepods-ctl"
+data_home=${XDG_DATA_HOME:-$HOME/.local/share}
+[[ "$data_home" == /* ]] || data_home="$HOME/.local/share"
+extension_dir="$data_home/gnome-shell/extensions/$extension_uuid"
+load_state=$(systemctl --user show --property=LoadState --value "$service")
+if [[ "$load_state" != not-found ]]; then
+    unit_path=$(systemctl --user show --property=FragmentPath --value "$service")
+    if [[ "$unit_path" != "$unit_file" ]]; then
+        printf 'Cannot remove %s: the loaded unit comes from a different installation: %s\n' "$service" "$unit_path" >&2
+        exit 1
+    fi
+fi
+files=("$HOME/.local/bin/airpods-gnome" "$HOME/.local/bin/airpods-gnome-ctl" "$unit_file")
+for file in "${files[@]}"; do
+    if [[ -d "$file" && ! -L "$file" ]]; then
+        printf 'Cannot remove a directory where an installed file was expected: %s\n' "$file" >&2
+        exit 1
+    fi
+done
+
+# A newly installed extension may exist on disk before GNOME has loaded it.
+extensions=$(gnome-extensions list --user)
+if [[ $'\n'"$extensions"$'\n' == *$'\n'"$extension_uuid"$'\n'* ]]; then
+    gnome-extensions disable "$extension_uuid"
+fi
+if [[ -L "$extension_dir" ]]; then
+    rm -- "$extension_dir"
+elif [[ -e "$extension_dir" ]]; then
+    gnome-extensions uninstall "$extension_uuid"
+fi
+
+# Stop successfully before removing an executable that a running service uses.
+if [[ "$load_state" != not-found ]]; then
+    systemctl --user stop "$service"
+fi
+if [[ "$load_state" != not-found || -e "$unit_file" || -L "$unit_file" ]]; then
+    systemctl --user disable "$service"
+fi
+rm -f -- "${files[@]}"
+# Clean a dangling startup link too, without touching a link to another unit.
+if [[ -L "$startup_link" && "$(readlink -m -- "$startup_link")" == "$unit_file" ]]; then
+    rm -- "$startup_link"
+fi
+# This alias belongs to the rename migration; a separate legacy client does not.
+if [[ -L "$control_alias" && "$(readlink -m -- "$control_alias")" == "$HOME/.local/bin/airpods-gnome-ctl" ]]; then
+    rm -- "$control_alias"
+fi
+systemctl --user daemon-reload
+printf 'AirPods extension and backend uninstalled. Saved settings and source project were kept.\n'

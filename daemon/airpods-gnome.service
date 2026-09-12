@@ -1,0 +1,41 @@
+[Unit]
+Description=AirPods GNOME backend
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/airpods-gnome --headless
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# The status file carries the AirPods identity, so nothing the daemon creates is world-readable.
+UMask=0077
+# systemd bind-mounts these two writable, which is what carves them out of the read-only home.
+StateDirectory=librepods
+StateDirectoryMode=0700
+ConfigurationDirectory=AirPodsTrayApp
+ConfigurationDirectoryMode=0700
+ProtectSystem=strict
+# strict leaves /home, /root and /run/user to ProtectHome, so home needs this line.
+ProtectHome=read-only
+# ProtectHome takes /run/user too, and the control socket has to live there.
+ReadWritePaths=%t
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_BLUETOOTH
+
+[Install]
+WantedBy=graphical-session.target

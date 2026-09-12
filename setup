@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+build_only=false
+case "${1:-}" in
+    '') ;;
+    --build-only) build_only=true ;;
+    -h|--help)
+        printf 'Usage: ./setup [--build-only]\n\nBuild and test the bundled backend, package the extension, and install both for this user.\n--build-only prepares the backend and extension without installing or restarting anything.\nSet CARGO_BUILD_JOBS to choose build jobs (default: 8).\n'
+        exit 0
+        ;;
+    *) printf 'Unknown option: %s\nUsage: ./setup [--build-only]\n' "$1" >&2; exit 2 ;;
+esac
+if (($# > 1)); then
+    printf 'Usage: ./setup [--build-only]\n' >&2
+    exit 2
+fi
+
+source "$(dirname -- "${BASH_SOURCE[0]}")/scripts/common.sh"
+require_commands cargo rustc cc gnome-extensions flock install
+if ! "$build_only"; then
+    require_commands systemctl wpctl pw-dump sha256sum
+    if ((EUID == 0)); then
+        printf 'Run setup as your desktop user, without sudo.\n' >&2
+        exit 1
+    fi
+    if ! systemctl --user show-environment >/dev/null; then
+        printf 'Cannot reach the user session. Run setup from a terminal in your desktop session.\n' >&2
+        exit 1
+    fi
+fi
+
+mkdir -p -- "$project_dir/build"
+exec 9>"$project_dir/build/setup.lock"
+if ! flock -n 9; then
+    printf 'Another setup is running for this checkout.\n' >&2
+    exit 1
+fi
+
+bash "$project_dir/scripts/build-backend.sh"
+bash "$project_dir/scripts/pack.sh"
+if "$build_only"; then
+    printf 'Backend built and tested. Extension package: %s\n' "$extension_bundle"
+    exit 0
+fi
+
+# Stage the tested Rust binaries and service before touching the running installation.
+stage_dir=$(mktemp -d "${TMPDIR:-/tmp}/airpods-gnome-install.XXXXXXXX")
+staged_prefix="$stage_dir$HOME/.local"
+backup_dir="$stage_dir/previous"
+restore_backend=false
+new_service=airpods-gnome.service
+old_service=librepods.service
+declare -A was_active=() was_enabled=() unit_states=()
+new_start_attempted=false
+old_stop_attempted=false
+old_stop_succeeded=false
+old_disable_attempted=false
+migrate_old_service=false
+install_control_alias=false
+changed_files=()
+# Exact files shipped by the earlier C++ and Rust backends. Never remove customized files
+# or symlinks, and do not depend on obsolete source assets remaining in checkout.
+declare -A retired_hashes=(
+    [share/applications/me.kavishdevar.librepods.desktop]=a485b2f5939e9f334fa8ffcdc0a37a292b1d349e9357ec1c710e5f712e5bed23
+    [share/icons/hicolor/scalable/apps/librepods.svg]=8d3d2c7bd6ecbed70afe21c5530ce03e35811b5090087bf5b1ca2fffbf63ef19
+    [share/openpods/translations/openpods_tr.qm]=c73b4f36f86f1ce74ee272d868fbf1dbaad25c26f229a962cdcecad888402aa3
+    [bin/librepods]='164daceb978f0fcae163a0bd48684fdc7ef296eb67d838b53c183422c7b7807b d8eb782785abf9b47dadda9035415d48457a4cc98f72b0ab748e310bcd5c793d'
+    [bin/librepods-ctl]='a4c35fc16b28c6e91ef34cc13239845c9fe32adeaad9e01c008fdf2615031d2c d64cc7d5327d0b9b02041b23487c6a39dc38bca8e47ceeec093b04d6e0875555'
+    [share/systemd/user/librepods.service]='9f8e1ce377006d93a4d2d82f113f743f87c561fbe5276a7736bcd78131fa44b5 e9292d42eb279f92a2e0b03c2b86104c5cf6e60d0204007098867d8968a3d2d7'
+)
+retired_files=()
+
+matches_retired_file() {
+    local relative_path=$1 target_file="$HOME/.local/$1" actual_hash
+    [[ -f "$target_file" && ! -L "$target_file" ]] || return 1
+    actual_hash=$(sha256sum -- "$target_file") || return 1
+    [[ " ${retired_hashes[$relative_path]} " == *" ${actual_hash%% *} "* ]]
+}
+
+control_alias_is_replaceable() {
+    local target_file="$HOME/.local/bin/librepods-ctl"
+    [[ ! -e "$target_file" && ! -L "$target_file" ]] ||
+        { [[ -L "$target_file" ]] && [[ "$(readlink -- "$target_file")" == airpods-gnome-ctl ]]; } ||
+        matches_retired_file bin/librepods-ctl
+}
+
+only_shared_service_drop_ins() {
+    local drop_in
+    local -a drop_ins=()
+    read -r -a drop_ins <<< "$1"
+    for drop_in in "${drop_ins[@]}"; do
+        # Generic service.d policy follows both unit names, regardless of which
+        # system or user configuration root supplies it. Unit-specific policy does not.
+        [[ "${drop_in%/*}" == */service.d ]] || return 1
+    done
+}
+
+cleanup() {
+    local status=$? relative_path recovery_failed=false
+    trap - EXIT
+    if "$restore_backend"; then
+        printf 'Backend installation failed; restoring previous files and service state.\n' >&2
+        set +e
+        if "$new_start_attempted" || [[ "${unit_states[$new_service]}" != not-found ]]; then
+            systemctl --user stop "$new_service" || recovery_failed=true
+        fi
+        if "$old_stop_attempted" && ! "$old_stop_succeeded"; then
+            systemctl --user stop "$old_service" || recovery_failed=true
+        fi
+        if "$new_start_attempted" && ! "${was_enabled[$new_service]}"; then
+            systemctl --user disable "$new_service" || recovery_failed=true
+        fi
+        for relative_path in "${changed_files[@]}"; do
+            if [[ -e "$backup_dir/$relative_path" || -L "$backup_dir/$relative_path" ]]; then
+                cp -a --remove-destination -- "$backup_dir/$relative_path" "$HOME/.local/$relative_path" || recovery_failed=true
+            else
+                rm -f -- "$HOME/.local/$relative_path" || recovery_failed=true
+            fi
+        done
+        systemctl --user daemon-reload || recovery_failed=true
+        if "$old_disable_attempted" && "${was_enabled[$old_service]}"; then
+            systemctl --user enable "$old_service" || recovery_failed=true
+        fi
+        if "$old_stop_attempted" && "${was_active[$old_service]}"; then
+            systemctl --user start "$old_service" || recovery_failed=true
+        fi
+        if "${was_active[$new_service]}"; then
+            systemctl --user start "$new_service" || recovery_failed=true
+        fi
+    fi
+    if "$recovery_failed"; then
+        printf 'Recovery could not finish. Previous files are retained at: %s\n' "$backup_dir" >&2
+    else
+        rm -rf -- "$stage_dir"
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+for binary in airpods-gnome airpods-gnome-ctl; do
+    install -D -m 755 -- "$project_dir/build/daemon-rust/release/$binary" "$staged_prefix/bin/$binary"
+done
+install -D -m 644 -- "$project_dir/daemon/$new_service" "$staged_prefix/share/systemd/user/$new_service"
+for required_file in bin/airpods-gnome bin/airpods-gnome-ctl share/systemd/user/airpods-gnome.service; do
+    if [[ ! -f "$staged_prefix/$required_file" ]]; then
+        printf 'Backend staging is incomplete: missing %s\n' "$required_file" >&2
+        exit 1
+    fi
+done
+if [[ ! -x "$staged_prefix/bin/airpods-gnome" || ! -x "$staged_prefix/bin/airpods-gnome-ctl" ]]; then
+    printf 'Staged backend binaries are not executable.\n' >&2
+    exit 1
+fi
+if [[ -n "$(find "$staged_prefix" ! -type f ! -type d -print -quit)" ]]; then
+    printf 'Backend staging contains an unsupported file type.\n' >&2
+    exit 1
+fi
+mapfile -d '' staged_files < <(find "$staged_prefix" -type f -printf '%P\0')
+replacement_files=("${staged_files[@]}")
+# Only a legacy installation or an existing migration alias needs the old name.
+# Once that alias has been retired, later updates must not recreate it.
+if [[ -e "$HOME/.local/bin/librepods" || -L "$HOME/.local/bin/librepods" ||
+      -e "$HOME/.local/bin/librepods-ctl" || -L "$HOME/.local/bin/librepods-ctl" ]] &&
+    control_alias_is_replaceable; then
+    install_control_alias=true
+    replacement_files+=(bin/librepods-ctl)
+fi
+for relative_path in "${replacement_files[@]}"; do
+    target_file="$HOME/.local/$relative_path"
+    if [[ -d "$target_file" && ! -L "$target_file" ]]; then
+        printf 'Cannot replace a directory with an installed file: %s\n' "$target_file" >&2
+        exit 1
+    fi
+    if [[ -e "$target_file" || -L "$target_file" ]]; then
+        mkdir -p -- "$(dirname -- "$backup_dir/$relative_path")"
+        cp -a -- "$target_file" "$backup_dir/$relative_path"
+    fi
+done
+for relative_path in "${!retired_hashes[@]}"; do
+    # The old control name remains an alias for the extension already loaded by GNOME.
+    [[ "$relative_path" == bin/librepods-ctl ]] && continue
+    if matches_retired_file "$relative_path"; then
+        mkdir -p -- "$(dirname -- "$backup_dir/$relative_path")"
+        cp -a -- "$HOME/.local/$relative_path" "$backup_dir/$relative_path"
+        retired_files+=("$relative_path")
+    fi
+done
+
+for service in "$new_service" "$old_service"; do
+    was_active[$service]=false
+    was_enabled[$service]=false
+    systemctl --user is-active --quiet "$service" && was_active[$service]=true
+    systemctl --user is-enabled --quiet "$service" && was_enabled[$service]=true
+    unit_states[$service]=$(systemctl --user show --property=LoadState --value "$service")
+done
+if [[ "${unit_states[$old_service]}" != not-found ]]; then
+    old_unit_path=$(systemctl --user show --property=FragmentPath --value "$old_service")
+    old_drop_ins=$(systemctl --user show --property=DropInPaths --value "$old_service")
+    if [[ "$old_unit_path" == "$HOME/.local/share/systemd/user/$old_service" ]] &&
+        only_shared_service_drop_ins "$old_drop_ins" &&
+        matches_retired_file "share/systemd/user/$old_service" &&
+        { [[ ! -e "$HOME/.local/bin/librepods" && ! -L "$HOME/.local/bin/librepods" ]] || matches_retired_file bin/librepods; }; then
+        migrate_old_service=true
+    else
+        printf 'Cannot migrate a customized or unrelated %s installation; existing files and services were left untouched.\n' "$old_service" >&2
+        exit 1
+    fi
+fi
+
+# A failed extension install leaves the existing daemon untouched.
+gnome-extensions install --force "$extension_bundle"
+restore_backend=true
+if "$migrate_old_service"; then
+    old_stop_attempted=true
+    systemctl --user stop "$old_service"
+    old_stop_succeeded=true
+    old_disable_attempted=true
+    systemctl --user disable "$old_service"
+fi
+if [[ "${unit_states[$new_service]}" != not-found ]]; then
+    systemctl --user stop "$new_service"
+fi
+for relative_path in "${staged_files[@]}"; do
+    changed_files+=("$relative_path")
+    install -D -m "$(stat -c '%a' "$staged_prefix/$relative_path")" \
+        -- "$staged_prefix/$relative_path" "$HOME/.local/$relative_path"
+done
+if "$install_control_alias"; then
+    if ! control_alias_is_replaceable; then
+        printf 'Legacy control command changed during installation; preserving it and restoring the previous backend.\n' >&2
+        exit 1
+    fi
+    changed_files+=(bin/librepods-ctl)
+    ln -sfn -- airpods-gnome-ctl "$HOME/.local/bin/librepods-ctl"
+fi
+for relative_path in "${retired_files[@]}"; do
+    # The user may have edited a launcher during the build/install preparation.
+    if matches_retired_file "$relative_path"; then
+        changed_files+=("$relative_path")
+        rm -- "$HOME/.local/$relative_path"
+    fi
+done
+systemctl --user daemon-reload
+new_start_attempted=true
+systemctl --user enable --now "$new_service"
+systemctl --user is-active --quiet "$new_service"
+restore_backend=false
+
+printf 'Backend and extension installed. Saved settings were kept.\n'
+printf 'Log out and back in to load the extension, then run: gnome-extensions enable %q\n' "$extension_uuid"

@@ -1,0 +1,6 @@
+/dist/
+/build/
+/daemon/target/
+node_modules/
+__pycache__/
+*.py[cod]

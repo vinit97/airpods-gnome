@@ -1,0 +1,7 @@
+{
+  "uuid": "airpods@vinit.local",
+  "name": "AirPods",
+  "description": "AirPods battery levels and listening controls in the GNOME top bar, with an included Rust backend.",
+  "shell-version": ["50"],
+  "version": 17
+}

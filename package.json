@@ -1,0 +1,17 @@
+{
+  "name": "airpods-gnome",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bash scripts/check.sh",
+    "test": "node tests/model.test.js",
+    "test:backend": "gjs -m tests/backend-smoke.js && gjs -m tests/commands-smoke.js",
+    "test:icons": "python3 tests/test_import_icons.py",
+    "test:installer": "python3 tests/test_setup.py",
+    "test:uninstaller": "python3 tests/test_uninstall.py",
+    "test:lifecycle": "python3 tests/test_lifecycle.py",
+    "test:shell": "bash scripts/test-shell.sh",
+    "pack": "bash scripts/pack.sh",
+    "pack:source": "python3 scripts/package-source.py"
+  }
+}
