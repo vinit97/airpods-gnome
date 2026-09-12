@@ -28,28 +28,21 @@ async function idle() {
 async function run() {
     const localBin = `${root}/.local/bin`;
     GLib.mkdir_with_parents(localBin, 0o700);
-    const legacyLocal = `${localBin}/librepods-ctl`;
     const currentLocal = `${localBin}/airpods-gnome-ctl`;
     const pathExecutables = new Map();
     const findInPath = name => pathExecutables.get(name) ?? null;
     const installLocal = path => Gio.File.new_for_path(executable).copy(Gio.File.new_for_path(path),
         Gio.FileCopyFlags.NONE, null, null);
     assert(findControlExecutable(root, findInPath) === null, 'Missing backend was found');
-    pathExecutables.set('librepods-ctl', executable);
-    assert(findControlExecutable(root, findInPath) === executable, 'Legacy PATH fallback failed');
-    installLocal(legacyLocal);
-    assert(findControlExecutable(root, findInPath) === legacyLocal, 'Legacy local fallback failed');
     pathExecutables.set('airpods-gnome-ctl', executable);
-    assert(findControlExecutable(root, findInPath) === executable,
-        'Legacy local backend took precedence over the current backend in PATH');
+    assert(findControlExecutable(root, findInPath) === executable, 'PATH lookup failed');
     installLocal(currentLocal);
     assert(findControlExecutable(root, findInPath) === currentLocal,
         'Current local backend was not preferred');
     Gio.File.new_for_path(currentLocal).set_attribute_uint32('unix::mode', 0o600, Gio.FileQueryInfoFlags.NONE, null);
     assert(findControlExecutable(root, findInPath) === executable, 'Non-executable local file masked a working backend');
     pathExecutables.delete('airpods-gnome-ctl');
-    assert(findControlExecutable(root, findInPath) === legacyLocal,
-        'Backend rollback did not recover the legacy executable');
+    assert(findControlExecutable(root, findInPath) === null, 'Non-executable backend was accepted');
 
     const errors = [];
     backend = new Backend(() => {}, (message, kind, command, selection) => errors.push({message, kind, command, selection}), root,
@@ -117,12 +110,12 @@ async function run() {
     assert(backend._queue.length === 0 && !backend._process && !backend._timeout && !backend._commandCancel,
         'Disable left pending commands or deadline state');
     assert(errors.length === count, 'Disable delivered a stale callback');
-    print('PASS: backend lookup and rollback fallback, command validation, coalescing, failure correlation, bounded timeouts, launcher failure, disable cleanup');
+    print('PASS: backend lookup, command validation, coalescing, failure correlation, bounded timeouts, launcher failure, disable cleanup');
 }
 run().catch(error => { failure = error; }).finally(() => loop.quit());
 loop.run();
 backend?.destroy();
-for (const path of [`${root}/librepods`, `${root}/.local/bin/airpods-gnome-ctl`, `${root}/.local/bin/librepods-ctl`,
+for (const path of [`${root}/librepods`, `${root}/.local/bin/airpods-gnome-ctl`,
     `${root}/.local/bin`, `${root}/.local`, executable, `${executable}.log`, root]) {
     const file = Gio.File.new_for_path(path);
     if (file.query_exists(null)) file.delete(null);

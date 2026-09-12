@@ -93,7 +93,6 @@ pub enum Event {
     AdaptiveLevel(u8),
     Conversation(bool),
     ConversationActivity(u8),
-    OneBudAnc(bool),
     Metadata {
         name: String,
         model_number: String,
@@ -130,10 +129,6 @@ pub fn adaptive_packet(level: u8) -> Option<[u8; 11]> {
     (level <= 100).then(|| control_packet(0x2e, level))
 }
 
-pub fn one_bud_packet(enabled: bool) -> [u8; 11] {
-    control_packet(0x1b, if enabled { 1 } else { 2 })
-}
-
 /// Parse one L2CAP datagram. Unknown packets are ignored; malformed known
 /// packets cannot partially update state because parsing has no side effects.
 pub fn parse_packet(data: &[u8]) -> Result<Option<Event>, ParseError> {
@@ -165,8 +160,7 @@ pub fn parse_packet(data: &[u8]) -> Result<Option<Event>, ParseError> {
             0x0d if (1..=4).contains(&value) => Event::NoiseMode(i32::from(value) - 1),
             0x2e if value <= 100 => Event::AdaptiveLevel(value),
             0x28 if value == 1 || value == 2 => Event::Conversation(value == 1),
-            0x1b if value == 1 || value == 2 => Event::OneBudAnc(value == 1),
-            0x0d | 0x2e | 0x28 | 0x1b => return Err(ParseError("invalid control value")),
+            0x0d | 0x2e | 0x28 => return Err(ParseError("invalid control value")),
             _ => return Ok(None),
         }
     } else if data.starts_with(CONVERSATION_HEADER) {

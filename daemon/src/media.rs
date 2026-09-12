@@ -663,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn ear_modes_match_legacy_values_and_disable_pending_work() {
+    fn ear_modes_match_published_values_and_disable_pending_work() {
         let now = Instant::now();
         let mut ears = EarPolicy::default();
         assert_eq!(ears.update(true, false, now), Some(EarAction::Pause));

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Schema 1 compatibility with the LibrePods/Omapods GNOME status interface.
+// Status published to the GNOME extension.
 
 use crate::protocol::{Advertisement, Component, EarState, Event};
 use serde::{Deserialize, Serialize};
@@ -42,22 +42,8 @@ pub struct Status {
     pub right: Battery,
     pub case: Battery,
     pub headset: Battery,
-    pub reconnect_attempts_total: u64,
-    pub reconnect_failures_total: u64,
-    pub noise_control_changes_total: u64,
-    pub forget_calls_total: u64,
-    pub ear_detection_changes_total: u64,
-    pub ca_changes_total: u64,
-    pub disconnect_calls_total: u64,
-    pub connect_calls_total: u64,
-    pub disconnect_failures_total: u64,
-    pub connect_failures_total: u64,
-    pub adaptive_level_changes_total: u64,
-    pub one_bud_anc_changes_total: u64,
-    pub reopen_calls_total: u64,
     pub conversational_awareness: bool,
     pub adaptive_noise_level: u8,
-    pub one_bud_anc_mode: bool,
     pub model_name: String,
     pub model_int: u8,
     pub is_pro_series: bool,
@@ -66,7 +52,6 @@ pub struct Status {
     pub supports_noise_control: bool,
     pub supports_adaptive: bool,
     pub supports_conversational_awareness: bool,
-    pub supports_one_bud_anc: bool,
     pub model_number: String,
     pub ear_detection_behavior: u8,
     pub lid_state: u8,
@@ -91,22 +76,8 @@ impl Default for Status {
             right: Battery::pod(),
             case: Battery::default(),
             headset: Battery::default(),
-            reconnect_attempts_total: 0,
-            reconnect_failures_total: 0,
-            noise_control_changes_total: 0,
-            forget_calls_total: 0,
-            ear_detection_changes_total: 0,
-            ca_changes_total: 0,
-            disconnect_calls_total: 0,
-            connect_calls_total: 0,
-            disconnect_failures_total: 0,
-            connect_failures_total: 0,
-            adaptive_level_changes_total: 0,
-            one_bud_anc_changes_total: 0,
-            reopen_calls_total: 0,
             conversational_awareness: false,
             adaptive_noise_level: 50,
-            one_bud_anc_mode: false,
             model_name: String::new(),
             model_int: 0,
             is_pro_series: false,
@@ -115,7 +86,6 @@ impl Default for Status {
             supports_noise_control: true,
             supports_adaptive: false,
             supports_conversational_awareness: false,
-            supports_one_bud_anc: false,
             model_number: String::new(),
             ear_detection_behavior: 1,
             lid_state: 2,
@@ -142,7 +112,6 @@ impl Status {
         self.supports_noise_control = !matches!(self.model_int, 1 | 2 | 3 | 9);
         self.supports_adaptive = matches!(self.model_int, 5 | 6 | 10 | 11 | 12);
         self.supports_conversational_awareness = self.supports_adaptive;
-        self.supports_one_bud_anc = matches!(self.model_int, 4 | 5 | 6 | 10 | 11);
     }
 
     pub fn ears_in(&self) -> (bool, bool) {
@@ -217,7 +186,6 @@ impl Status {
             Event::NoiseMode(mode) => self.noise_mode = *mode,
             Event::AdaptiveLevel(level) => self.adaptive_noise_level = *level,
             Event::Conversation(enabled) => self.conversational_awareness = *enabled,
-            Event::OneBudAnc(enabled) => self.one_bud_anc_mode = *enabled,
             Event::Metadata { name, model_number } => {
                 self.device_name.clone_from(name);
                 self.set_model_number(model_number);

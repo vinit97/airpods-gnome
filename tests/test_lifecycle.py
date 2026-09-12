@@ -204,7 +204,7 @@ class LifecycleTest(unittest.TestCase):
     def start(self, connected=True):
         with self.log.open("ab") as log:
             self.process = subprocess.Popen([
-                str(self.daemon), "--headless", "--test-transport", str(self.peer.path),
+                str(self.daemon), "--test-transport", str(self.peer.path),
             ], env=self.env, stdout=log, stderr=subprocess.STDOUT)
         self.wait_for(lambda: self.socket_path.exists() and self.status_path.exists())
         if connected:
@@ -373,13 +373,10 @@ class LifecycleTest(unittest.TestCase):
         self.command("noise:adaptive", success=False)
         self.command("noise:anc")
 
-    def test_preferences_survive_restart_and_legacy_file_is_preserved(self):
-        self.config_dir.mkdir()
-        legacy = "[earDetection]\nsetting=2\n[DeviceInfo]\nadaptiveNoiseLevel=32\n"
-        legacy_path = self.config_dir / "AirPodsTrayApp.conf"
-        legacy_path.write_text(legacy)
+    def test_fresh_preferences_survive_restart(self):
+        self.assertFalse(self.config_dir.exists())
         self.start()
-        self.assertEqual(self.status()["ear_detection_behavior"], 2)
+        self.assertEqual(self.status()["ear_detection_behavior"], 0)
         for verb in ("noise:adaptive", "ear:both", "ca:on", "adaptive:73"):
             self.command(verb)
         saved = self.wait_status(lambda status: status["ear_detection_behavior"] == 1
@@ -392,7 +389,6 @@ class LifecycleTest(unittest.TestCase):
                                   and status["adaptive_noise_level"] == 73)
         for key in ("ear_detection_behavior", "conversational_awareness", "adaptive_noise_level"):
             self.assertEqual(status[key], saved[key])
-        self.assertEqual(legacy_path.read_text(), legacy)
         self.assertEqual((self.config_dir / "rust-settings.json").stat().st_mode & 0o777, 0o600)
 
     def test_disconnect_publishes_hidden_state_and_reconnects_with_fresh_batteries(self):
@@ -453,7 +449,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_second_daemon_is_rejected_without_damaging_running_instance(self):
         self.start()
-        second = subprocess.run([str(self.daemon), "--headless", "--test-transport", str(self.peer.path)],
+        second = subprocess.run([str(self.daemon), "--test-transport", str(self.peer.path)],
                                 env=self.env, capture_output=True, text=True, timeout=5)
         self.assertNotEqual(second.returncode, 0)
         self.assertIn("already running", second.stderr)

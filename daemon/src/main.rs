@@ -56,9 +56,8 @@ async fn run() -> Result<()> {
     #[cfg_attr(not(feature = "test-support"), allow(clippy::while_let_on_iterator))]
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--headless" => {}
             "--help" | "-h" => {
-                println!("Usage: airpods-gnome [--headless]\nHeadless AirPods controls for GNOME.");
+                println!("Usage: airpods-gnome\nHeadless AirPods controls for GNOME.");
                 return Ok(());
             }
             "--version" => {
@@ -113,7 +112,6 @@ async fn run() -> Result<()> {
     status.ear_detection_behavior = settings.ear_detection_behavior;
     status.conversational_awareness = settings.conversational_awareness;
     status.adaptive_noise_level = settings.adaptive_noise_level;
-    status.one_bud_anc_mode = settings.one_bud_anc;
     let mut app = App {
         status,
         settings,
@@ -221,8 +219,6 @@ impl App {
                     m.conversation = None;
                 });
             }
-            bluetooth::Event::Attempt => self.status.reconnect_attempts_total += 1,
-            bluetooth::Event::Failed => self.status.reconnect_failures_total += 1,
             bluetooth::Event::Advertisement(address, data) => {
                 if let (Ok(irk), Ok(key)) = (
                     self.settings.magic_acc_irk.as_slice().try_into(),
@@ -300,7 +296,7 @@ impl App {
             "ear:one" => settings.ear_detection_behavior = 0,
             "ear:both" => settings.ear_detection_behavior = 1,
             "ear:off" => settings.ear_detection_behavior = 2,
-            "noise:off" | "noise:anc" | "noise:transparency" | "noise:adaptive" | "noise:cycle" => {
+            "noise:off" | "noise:anc" | "noise:transparency" | "noise:adaptive" => {
                 anyhow::ensure!(self.status.connected, "AirPods are disconnected");
                 anyhow::ensure!(
                     self.status.supports_noise_control,
@@ -310,20 +306,7 @@ impl App {
                     "noise:off" => 0,
                     "noise:anc" => 1,
                     "noise:transparency" => 2,
-                    "noise:adaptive" => 3,
-                    _ => {
-                        let available: Vec<i32> = (0..4)
-                            .filter(|m| {
-                                (*m != 0 || self.status.supports_noise_off)
-                                    && (*m != 3 || self.status.supports_adaptive)
-                            })
-                            .collect();
-                        let index = available
-                            .iter()
-                            .position(|m| *m == self.status.noise_mode)
-                            .map_or(0, |i| (i + 1) % available.len());
-                        available[index]
-                    }
+                    _ => 3,
                 };
                 anyhow::ensure!(
                     mode != 0 || self.status.supports_noise_off,
@@ -348,14 +331,6 @@ impl App {
                 packet =
                     Some(protocol::conversation_packet(settings.conversational_awareness).to_vec());
             }
-            "onebud:on" | "onebud:off" => {
-                anyhow::ensure!(
-                    self.status.supports_one_bud_anc,
-                    "One-bud ANC is unavailable for this model"
-                );
-                settings.one_bud_anc = command == "onebud:on";
-                packet = Some(protocol::one_bud_packet(settings.one_bud_anc).to_vec());
-            }
             "connect" | "disconnect" => {
                 self.bluetooth
                     .device_command(
@@ -369,7 +344,6 @@ impl App {
                     .await?;
                 return Ok("ok\n".into());
             }
-            "reopen" => anyhow::bail!("this daemon runs headless and has no window"),
             _ if command.starts_with("adaptive:") => {
                 let value = command.trim_start_matches("adaptive:");
                 let level: u8 = value.parse().context("Adaptive level must be 0–100")?;
@@ -421,28 +395,20 @@ impl App {
         }
         if let Some(mode) = noise {
             self.status.noise_mode = mode;
-            self.status.noise_control_changes_total += 1;
         }
         self.status.ear_detection_behavior = self.settings.ear_detection_behavior;
         if command.starts_with("ear:") {
-            self.status.ear_detection_changes_total += 1;
             self.media
                 .send_modify(|m| m.behavior = self.settings.ear_detection_behavior);
         }
         if command.starts_with("ca:") {
             self.status.conversational_awareness = self.settings.conversational_awareness;
-            self.status.ca_changes_total += 1;
             if !self.status.conversational_awareness {
                 self.media.send_modify(|m| m.conversation = Some(8));
             }
         }
         if command.starts_with("adaptive:") {
             self.status.adaptive_noise_level = self.settings.adaptive_noise_level;
-            self.status.adaptive_level_changes_total += 1;
-        }
-        if command.starts_with("onebud:") {
-            self.status.one_bud_anc_mode = self.settings.one_bud_anc;
-            self.status.one_bud_anc_changes_total += 1;
         }
         Ok("ok\n".into())
     }

@@ -38,8 +38,6 @@ pub enum Event {
     Disconnected,
     Packet(Vec<u8>),
     Advertisement(String, Vec<u8>),
-    Attempt,
-    Failed,
 }
 
 enum Link {
@@ -235,7 +233,6 @@ async fn control_loop(
             continue;
         };
         scan.send_replace(false);
-        let _ = events.send(Event::Attempt).await;
         let connect = async {
             let address = current.address.parse()?;
             let socket =
@@ -280,7 +277,6 @@ async fn control_loop(
                 if failures == 1 {
                     eprintln!("AirPods control connection: {error}");
                 }
-                let _ = events.send(Event::Failed).await;
             }
         }
         scan.send_replace(true);
@@ -508,7 +504,6 @@ async fn test_loop(
 ) {
     use tokio::{io::AsyncReadExt, net::UnixStream};
     loop {
-        let _ = events.send(Event::Attempt).await;
         if let Ok(socket) = UnixStream::connect(&path).await {
             let (mut reader, writer) = socket.into_split();
             link.send_replace(Some(Arc::new(Link::Test(tokio::sync::Mutex::new(writer)))));
@@ -526,8 +521,6 @@ async fn test_loop(
             }
             link.send_replace(None);
             let _ = events.send(Event::Disconnected).await;
-        } else {
-            let _ = events.send(Event::Failed).await;
         }
         sleep(Duration::from_millis(300)).await;
     }

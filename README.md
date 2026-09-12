@@ -1,7 +1,7 @@
 # AirPods for GNOME
 
-AirPods battery levels and controls in the GNOME Shell 50 top bar. Includes the
-Rust backend and icon source; no separate LibrePods or Omapods install is needed.
+AirPods battery levels and controls in the GNOME Shell 50 top bar, with an
+included Rust backend and icon source.
 
 ![AirPods menu](docs/preview.png)
 
@@ -42,8 +42,21 @@ inside may refresh them. Available controls vary by model.
 
 Ear Detection persists across restarts. Conversation Awareness and Adaptive
 choices are remembered, but live AirPods reports take precedence. Listening mode
-comes from the AirPods. See [behavior details](docs/behavior.md) and
-[backend paths and diagnostics](daemon/README.md).
+comes from the AirPods. See [behavior details](docs/behavior.md).
+
+## Files and diagnostics
+
+| File | Default location |
+| --- | --- |
+| Backend and command-line client | `~/.local/bin/` |
+| User service | `~/.local/share/systemd/user/airpods-gnome.service` |
+| Saved settings | `~/.config/AirPodsTrayApp/rust-settings.json` |
+| Live status | `~/.local/state/librepods/status.json` |
+| Command socket | `$XDG_RUNTIME_DIR/librepods.sock` |
+
+Settings and state follow `XDG_CONFIG_HOME` and `XDG_STATE_HOME` when set.
+Use `journalctl --user -u airpods-gnome.service -b` for logs and
+`~/.local/bin/airpods-gnome-ctl status` for current readings.
 
 ## Remove
 
@@ -51,8 +64,8 @@ comes from the AirPods. See [behavior details](docs/behavior.md) and
 ./uninstall
 ```
 
-Run without sudo. Removes the extension, backend binaries, user service, and
-migration symlink. Saved settings and the source project are kept.
+Run without sudo. Removes the extension, backend binaries, and user service.
+Saved settings and the source project are kept.
 
 ## Development
 
@@ -67,10 +80,9 @@ npm test
 simulated AirPods. Optional `npm run test:shell` needs `gnome-shell-test-tool`,
 `dbus-run-session`, and graphics access. Real battery and audio checks need AirPods.
 
-Use `./setup --build-only` to build/test and package without installing, or
-`bash scripts/install.sh` for extension-only updates. `CARGO_BUILD_JOBS` defaults
-to eight. Output goes in `build/` and `dist/`; `npm run pack:source` creates a
-source tarball. Regenerate icons from `assets/AirPodsIcon.qml` with
+Use `./setup --build-only` to build/test and package without installing.
+`CARGO_BUILD_JOBS` defaults to eight; output goes in `build/` and `dist/`.
+Regenerate icons from `assets/AirPodsIcon.qml` with
 `python3 scripts/import-omapods-icons.py`.
 
 ## Credits and license

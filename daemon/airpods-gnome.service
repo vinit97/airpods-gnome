@@ -5,7 +5,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/airpods-gnome --headless
+ExecStart=%h/.local/bin/airpods-gnome
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

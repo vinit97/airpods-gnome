@@ -7,15 +7,9 @@ import {parseStatus, validCommand} from './model.js';
 const statusDecoder = new TextDecoder();
 
 export function findControlExecutable(home = GLib.get_home_dir(), findInPath = name => GLib.find_program_in_path(name)) {
-    // Prefer the current backend everywhere; the legacy name keeps an extension
-    // installed before a failed backend migration usable after rollback.
-    for (const name of ['airpods-gnome-ctl', 'librepods-ctl']) {
-        const local = GLib.build_filenamev([home, '.local', 'bin', name]);
-        if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE)) return local;
-        const executable = findInPath(name);
-        if (executable) return executable;
-    }
-    return null;
+    const local = GLib.build_filenamev([home, '.local', 'bin', 'airpods-gnome-ctl']);
+    if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE)) return local;
+    return findInPath('airpods-gnome-ctl');
 }
 
 export class Backend {

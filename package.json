@@ -13,7 +13,6 @@
     "test:uninstaller": "python3 tests/test_uninstall.py",
     "test:lifecycle": "python3 tests/test_lifecycle.py",
     "test:shell": "bash scripts/test-shell.sh",
-    "pack": "bash scripts/pack.sh",
-    "pack:source": "python3 scripts/package-source.py"
+    "pack": "bash scripts/pack.sh"
   }
 }

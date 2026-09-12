@@ -95,8 +95,6 @@ class UninstallTest(unittest.TestCase):
         for path in (self.unit, self.binary, self.client):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('installed file')
-        self.alias = self.home / '.local/bin/librepods-ctl'
-        self.alias.symlink_to('airpods-gnome-ctl')
         self.link = self.home / '.config/systemd/user/graphical-session.target.wants/airpods-gnome.service'
         self.link.parent.mkdir(parents=True)
         self.link.symlink_to(self.unit)
@@ -146,7 +144,7 @@ class UninstallTest(unittest.TestCase):
     def test_complete_uninstall_and_repeated_run(self):
         for _ in range(2):
             self.run_uninstall()
-            for path in (self.binary, self.client, self.unit, self.alias, self.link, self.extension):
+            for path in (self.binary, self.client, self.unit, self.link, self.extension):
                 self.assertFalse(path.exists() or path.is_symlink(), path)
         state = self.state()
         self.assertFalse(state['active'] or state['enabled'] or state['loaded'])
@@ -178,27 +176,11 @@ class UninstallTest(unittest.TestCase):
             with self.subTest(failure=failure):
                 self.run_uninstall(expected=None, failure=failure)
                 self.assert_installed()
-                self.assertTrue(self.alias.is_symlink())
 
     def test_extension_failure_does_not_stop_backend(self):
         self.run_uninstall(expected=None, failure='uninstall')
         self.assert_installed()
         self.assertNotIn(['systemctl', 'stop'], self.events())
-
-    def test_unrelated_legacy_client_is_preserved(self):
-        self.alias.unlink()
-        self.alias.write_text('separate legacy client')
-        self.run_uninstall()
-        self.assertEqual(self.alias.read_text(), 'separate legacy client')
-
-    def test_unrelated_client_symlink_is_preserved(self):
-        self.alias.unlink()
-        other = self.root / 'other client'
-        other.write_text('keep')
-        self.alias.symlink_to(other)
-        self.run_uninstall()
-        self.assertTrue(self.alias.is_symlink())
-        self.assertEqual(other.read_text(), 'keep')
 
     def test_extension_on_disk_before_first_login_is_removed(self):
         self.write_state(extension_loaded=False, extension_enabled=False)
