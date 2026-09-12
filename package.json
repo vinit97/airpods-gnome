@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "check": "bash scripts/check.sh",
-    "test": "node tests/model.test.js",
+    "test": "npm run test:daemon && npm run test:model && npm run test:backend && npm run test:icons && npm run test:installer && npm run test:uninstaller && npm run test:lifecycle",
+    "test:daemon": "bash scripts/build-backend.sh",
+    "test:model": "node tests/model.test.js",
     "test:backend": "gjs -m tests/backend-smoke.js && gjs -m tests/commands-smoke.js",
     "test:icons": "python3 tests/test_import_icons.py",
     "test:installer": "python3 tests/test_setup.py",

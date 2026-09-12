@@ -1,124 +1,84 @@
 # AirPods for GNOME
 
-AirPods battery levels and controls in the Fedora GNOME top bar. Includes a
-GNOME Shell 50 extension, a Rust backend based on LibrePods, and the icon source.
+AirPods battery levels and controls in the GNOME Shell 50 top bar. Includes the
+Rust backend and icon source; no separate LibrePods or Omapods install is needed.
 
 ![AirPods menu](docs/preview.png)
 
-Preview uses sample battery data. [Light theme](docs/preview-light.png).
-
-## Controls
-
-- Battery rings show left, case, and right. The indicator hides when disconnected.
-- Click a listening mode, or right-click/scroll the top-bar icon to cycle modes.
-- Use the slider for Adaptive noise level and the Conversation Awareness switch.
-- **Ear Detection:** Off disables automatic pausing; I pauses when either AirPod
-  is removed; II pauses when both are removed. Supports clicks, Space, and arrow keys.
-
-Controls update immediately and recover if a command fails. Available controls
-vary by model. AirPods Max shows one headphone battery.
-
-See the [behavior overview](docs/behavior.md) for each action and event.
-
-Ear Detection persists across backend restarts. Conversation Awareness and
-Adaptive choices are remembered, but live AirPods reports take precedence.
-Listening mode comes from the AirPods; reconnecting does not force a saved preset.
-Settings live in `~/.config/AirPodsTrayApp/`; the earlier C++ configuration is
-imported without removing it.
-
-Unknown battery readings show a dash. Case readings can be stale; opening the lid
-with an AirPod in the case may refresh them. Left and right readings come directly
-from the daemon.
+Preview uses sample data. [Light theme](docs/preview-light.png).
 
 ## Install
 
-Use the full project source. On Fedora 44, install the build dependencies:
+From the full project source on Fedora 44:
 
 ```bash
-sudo dnf install cargo rust gcc python3 pipewire-utils wireplumber
-```
-
-Then run from the project directory:
-
-```bash
+sudo dnf install cargo rust gcc python3 gjs pipewire-utils wireplumber
 ./setup
 ```
 
-Setup builds and tests the bundled daemon, installs both components under
-`~/.local`, and enables or restarts `airpods-gnome.service`. Saved daemon settings
-are preserved. Cargo downloads the dependencies pinned in `daemon/Cargo.lock`
-on the first build. Set `CARGO_BUILD_JOBS` to adjust the default eight build jobs.
-Bash and GNOME's `gnome-extensions` command must also be available.
+Run `./setup` as your desktop user, without sudo. It builds/tests the backend,
+installs both components under `~/.local`, enables the extension, and starts
+`airpods-gnome.service`. Run it again to update; saved settings are kept.
 
-Log out and back in, then enable it:
+- **Build:** Rust/Cargo, GCC, Python 3, Bash, and `gnome-extensions`.
+  Cargo downloads the libraries pinned in `daemon/Cargo.lock`.
+- **Runtime:** GNOME Shell 50/GJS, BlueZ, PipeWire/WirePlumber (`pw-dump` and
+  `wpctl`), D-Bus, and a systemd user session.
 
-```bash
-extension_uuid=$(python3 -c 'import json; print(json.load(open("metadata.json"))["uuid"])')
-gnome-extensions enable "$extension_uuid"
-```
+Log out and back in if GNOME has not discovered a first installation, or to load
+updated extension code. Setup has already saved the extension's enabled state.
+Pair your AirPods in GNOME Bluetooth Settings; the indicator appears when connected.
 
-Pair your AirPods in GNOME Bluetooth Settings. The indicator appears when they
-connect. The extension lives in `~/.local/share/gnome-shell/extensions/`; daemon
-commands `airpods-gnome` and `airpods-gnome-ctl` live in `~/.local/bin/`, and status is written to
-`~/.local/state/librepods/status.json`.
+## Use
 
-Run `./setup` again to update both components, or `bash scripts/install.sh` for
-extension-only changes. Extension code updates need a new GNOME session.
+- Click a listening mode, or right-click/scroll the top-bar icon to cycle modes.
+- Adjust the Adaptive slider or Conversation Awareness switch.
+- **Ear Detection:** Off disables automatic pausing; I pauses when either AirPod
+  is removed; II pauses when both are removed.
 
-## Source
+Battery rings show left, case, and right; AirPods Max shows one battery. Unknown
+readings show a dash. Case readings can be stale; opening the lid with an AirPod
+inside may refresh them. Available controls vary by model.
 
-- `daemon/`: the Rust backend, with [upstream provenance](daemon/UPSTREAM.md).
-- `assets/`: original QML icon source; `icons/` contains the generated SVGs and notices.
-- `scripts/`: build, packaging, and icon tools. Generated output goes in `build/` and `dist/`.
-
-## Development
-
-Requires Node.js/npm, GJS, and Python 3. No npm dependencies are needed.
-
-```bash
-./setup --build-only
-npm run check
-npm test
-npm run test:backend
-npm run test:icons
-npm run test:installer
-npm run test:uninstaller
-npm run test:lifecycle
-npm run test:shell
-npm run pack
-npm run pack:source
-```
-
-`--build-only` builds and tests the daemon and packages the extension without
-installing anything. Regenerate icons with `python3 scripts/import-omapods-icons.py`.
-
-The lifecycle tests run the real daemon and control client with an isolated,
-simulated AirPods transport. The Shell test needs `gnome-shell-test-tool`,
-`dbus-run-session`, and graphics access; it runs an isolated GNOME session with
-sample data and mocked commands. Check real battery readings and audio changes
-with connected AirPods.
-
-`dist/` contains the extension-only ZIP and, with `pack:source`, a source tarball
-including the backend and setup script. Build and icon generation use bundled
-source; normal Fedora dependencies are still required.
+Ear Detection persists across restarts. Conversation Awareness and Adaptive
+choices are remembered, but live AirPods reports take precedence. Listening mode
+comes from the AirPods. See [behavior details](docs/behavior.md) and
+[backend paths and diagnostics](daemon/README.md).
 
 ## Remove
-
-Run from the project directory, without sudo:
 
 ```bash
 ./uninstall
 ```
 
-This removes the extension, backend binaries, user service, startup link, and
-migration compatibility symlink. Saved settings and the source project are kept.
+Run without sudo. Removes the extension, backend binaries, user service, and
+migration symlink. Saved settings and the source project are kept.
+
+## Development
+
+Tests also require Node.js/npm; no npm dependencies are needed.
+
+```bash
+npm run check
+npm test
+```
+
+`npm test` runs all automated suites, including backend lifecycle tests with
+simulated AirPods. Optional `npm run test:shell` needs `gnome-shell-test-tool`,
+`dbus-run-session`, and graphics access. Real battery and audio checks need AirPods.
+
+Use `./setup --build-only` to build/test and package without installing, or
+`bash scripts/install.sh` for extension-only updates. `CARGO_BUILD_JOBS` defaults
+to eight. Output goes in `build/` and `dist/`; `npm run pack:source` creates a
+source tarball. Regenerate icons from `assets/AirPodsIcon.qml` with
+`python3 scripts/import-omapods-icons.py`.
 
 ## Credits and license
 
 Extension code: [GPL-3.0-or-later](LICENSE). The bundled
 [GPL-licensed daemon](daemon/LICENSE) derives from
 [LibrePods](https://github.com/librepods-org/librepods) through
-[Omapods](https://github.com/thisisgm/omarchy-pods).
+[Omapods](https://github.com/thisisgm/omarchy-pods); see [provenance](daemon/UPSTREAM.md).
 
 Icons use Apple's product artwork from Omapods' `AirPodsIcon.qml`, converted to
 SVG. They are excluded from the software license; see [icon credits](icons/README.md).

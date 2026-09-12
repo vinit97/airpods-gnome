@@ -19,7 +19,7 @@ fi
 source "$(dirname -- "${BASH_SOURCE[0]}")/scripts/common.sh"
 require_commands cargo rustc cc gnome-extensions flock install
 if ! "$build_only"; then
-    require_commands systemctl wpctl pw-dump sha256sum
+    require_commands systemctl wpctl pw-dump sha256sum gjs
     if ((EUID == 0)); then
         printf 'Run setup as your desktop user, without sudo.\n' >&2
         exit 1
@@ -247,7 +247,7 @@ systemctl --user daemon-reload
 new_start_attempted=true
 systemctl --user enable --now "$new_service"
 systemctl --user is-active --quiet "$new_service"
+enable_extension
 restore_backend=false
 
-printf 'Backend and extension installed. Saved settings were kept.\n'
-printf 'Log out and back in to load the extension, then run: gnome-extensions enable %q\n' "$extension_uuid"
+printf 'Backend and extension installed and enabled. Saved settings were kept.\n'

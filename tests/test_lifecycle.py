@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the real Rust daemon, control client, and GJS bridge against simulated AAP."""
 
+from contextlib import ExitStack
 from pathlib import Path
 import json
 import os
@@ -253,6 +254,9 @@ class LifecycleTest(unittest.TestCase):
             self.assertTrue(result.stderr.strip())
         return result
 
+    def status(self):
+        return json.loads(self.command("status").stdout)
+
     def tearDown(self):
         self.assertFalse(self.peer.errors, self.peer.errors)
 
@@ -264,7 +268,7 @@ class LifecycleTest(unittest.TestCase):
         status = self.wait_status(lambda status: status["connected"] is False)
         self.assertFalse(status["left"]["available"])
         self.assertFalse(status["case"]["available"])
-        self.assertEqual(json.loads(self.command("status").stdout), status)
+        self.assertEqual(self.status(), status)
         self.assertEqual(self.status_path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.socket_path.stat().st_mode & 0o777, 0o600)
 
@@ -277,7 +281,7 @@ class LifecycleTest(unittest.TestCase):
     def test_independent_batteries_unknown_case_and_ear_notifications(self):
         self.peer.battery = battery_packet(case=None)
         self.start()
-        status = json.loads(self.command("status").stdout)
+        status = self.status()
         self.assertEqual((status["left"]["level"], status["right"]["level"]), (81, 63))
         self.assertFalse(status["case"]["available"])
         self.peer.send(battery_packet(), bytes.fromhex("0400040006000001"))
@@ -316,7 +320,7 @@ class LifecycleTest(unittest.TestCase):
         elapsed = time.monotonic() - before
         self.assertGreaterEqual(elapsed, 0.3, "CLI acknowledged before the requested mode was reported")
         self.assertLess(elapsed, 3)
-        status = json.loads(self.command("status").stdout)
+        status = self.status()
         self.assertEqual(status["noise_mode"], 3)
         self.assertEqual((status["left"]["level"], status["right"]["level"]), (74, 61))
 
@@ -334,7 +338,7 @@ class LifecycleTest(unittest.TestCase):
                 elapsed = time.monotonic() - before
                 self.assertGreaterEqual(elapsed, 1, "Missing confirmation was not awaited")
                 self.assertLess(elapsed, 4)
-                self.assertEqual(json.loads(self.command("status").stdout)["noise_mode"], 1)
+                self.assertEqual(self.status()["noise_mode"], 1)
                 self.command("ear:both")
                 self.wait_status(lambda status: status["ear_detection_behavior"] == 1)
         self.peer.echo_noise = True
@@ -345,7 +349,7 @@ class LifecycleTest(unittest.TestCase):
     def test_airpods_pro_3_hides_off_mode_and_supports_adaptive_controls(self):
         self.peer.metadata = metadata_packet("A3064")
         self.start()
-        status = json.loads(self.command("status").stdout)
+        status = self.status()
         self.assertFalse(status["supports_noise_off"])
         self.assertTrue(status["supports_adaptive"])
         self.assertTrue(status["supports_conversational_awareness"])
@@ -360,7 +364,7 @@ class LifecycleTest(unittest.TestCase):
         self.peer.metadata = metadata_packet("A3184")
         self.peer.battery = bytes.fromhex("040004000400010101550201")
         self.start()
-        status = json.loads(self.command("status").stdout)
+        status = self.status()
         self.assertTrue(status["is_headset"])
         self.assertEqual(status["headset"]["level"], 85)
         self.assertFalse(status["left"]["available"])
@@ -375,7 +379,7 @@ class LifecycleTest(unittest.TestCase):
         legacy_path = self.config_dir / "AirPodsTrayApp.conf"
         legacy_path.write_text(legacy)
         self.start()
-        self.assertEqual(json.loads(self.command("status").stdout)["ear_detection_behavior"], 2)
+        self.assertEqual(self.status()["ear_detection_behavior"], 2)
         for verb in ("noise:adaptive", "ear:both", "ca:on", "adaptive:73"):
             self.command(verb)
         saved = self.wait_status(lambda status: status["ear_detection_behavior"] == 1
@@ -453,7 +457,7 @@ class LifecycleTest(unittest.TestCase):
                                 env=self.env, capture_output=True, text=True, timeout=5)
         self.assertNotEqual(second.returncode, 0)
         self.assertIn("already running", second.stderr)
-        self.assertTrue(json.loads(self.command("status").stdout)["connected"])
+        self.assertTrue(self.status()["connected"])
         self.assertIsNone(self.process.poll())
 
     def test_sigterm_cleans_socket_and_connected_state(self):
@@ -480,14 +484,12 @@ class LifecycleTest(unittest.TestCase):
 
     def test_abandoned_and_oversize_clients_do_not_block_status_or_commands(self):
         self.start()
-        clients = []
-        try:
+        with ExitStack() as clients:
             for _ in range(12):
-                client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                client = clients.enter_context(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
                 client.settimeout(4)
                 client.connect(str(self.socket_path))
                 client.sendall(b"noise:")
-                clients.append(client)
             self.command("status")
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as oversized:
                 oversized.settimeout(4)
@@ -500,9 +502,6 @@ class LifecycleTest(unittest.TestCase):
                     pass
             self.command("ear:both")
             self.wait_status(lambda status: status["ear_detection_behavior"] == 1)
-        finally:
-            for client in clients:
-                client.close()
 
     @unittest.skipUnless(shutil.which("gjs"), "GJS is required for the extension bridge check")
     def test_gjs_backend_observes_disconnect_and_reconnect(self):

@@ -410,13 +410,16 @@ async fn discovery_scenario() {
         adapter.lock().unwrap().owners,
         HashSet::from([external_owner.clone()])
     );
-    let stops = adapter
-        .lock()
-        .unwrap()
-        .calls
-        .iter()
-        .filter(|(caller, method)| caller == &owner && method == "StopDiscovery")
-        .count();
+    let stop_count = || {
+        adapter
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(caller, method)| caller == &owner && method == "StopDiscovery")
+            .count()
+    };
+    let stops = stop_count();
     property_change(
         &bluez,
         PODS,
@@ -428,16 +431,7 @@ async fn discovery_scenario() {
     .await;
     scan.send_replace(false);
     sleep(Duration::from_millis(50)).await;
-    assert_eq!(
-        adapter
-            .lock()
-            .unwrap()
-            .calls
-            .iter()
-            .filter(|(caller, method)| caller == &owner && method == "StopDiscovery")
-            .count(),
-        stops
-    );
+    assert_eq!(stop_count(), stops);
     scan.send_replace(true);
     wait_scanning(&adapter, &owner, true).await;
 

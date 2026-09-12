@@ -231,27 +231,10 @@ fn unescape(value: &str) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    struct TestDirectory(std::path::PathBuf);
-    impl TestDirectory {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "airpods-settings-test-{}-{}",
-                std::process::id(),
-                TEMP_ID.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-    }
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn migrates_preferences_and_binary_keys_without_touching_legacy() {
-        let directory = TestDirectory::new();
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
         let legacy = concat!(
             "[earDetection]\nsetting=1\n[DeviceInfo]\n",
             "deviceName=\"AirPods, Pro\"\nmodelNumber=A3048\nmodel=6\n",
@@ -260,21 +243,21 @@ mod tests {
             "magicAccEncKey=@ByteArray(0123456789abcdef)\n",
             "[crossdevice]\nenabled=true\n"
         );
-        fs::write(directory.0.join("AirPodsTrayApp.conf"), legacy).unwrap();
-        let settings = Settings::load(&directory.0).unwrap();
+        fs::write(directory.path().join("AirPodsTrayApp.conf"), legacy).unwrap();
+        let settings = Settings::load(directory.path()).unwrap();
         assert_eq!(settings.ear_detection_behavior, 1);
         assert_eq!(settings.adaptive_noise_level, 75);
         assert!(settings.conversational_awareness);
         assert_eq!(settings.device_name, "AirPods, Pro");
         assert_eq!(settings.magic_acc_irk, (0..16).collect::<Vec<u8>>());
-        settings.save(&directory.0).unwrap();
+        settings.save(directory.path()).unwrap();
         assert_eq!(
-            fs::read_to_string(directory.0.join("AirPodsTrayApp.conf")).unwrap(),
+            fs::read_to_string(directory.path().join("AirPodsTrayApp.conf")).unwrap(),
             legacy
         );
-        assert!(Settings::load(&directory.0).unwrap() == settings);
+        assert!(Settings::load(directory.path()).unwrap() == settings);
         assert_eq!(
-            fs::metadata(directory.0.join(FILE_NAME))
+            fs::metadata(directory.path().join(FILE_NAME))
                 .unwrap()
                 .permissions()
                 .mode()
@@ -282,46 +265,46 @@ mod tests {
             0o600
         );
         assert_eq!(
-            fs::metadata(&directory.0).unwrap().permissions().mode() & 0o777,
+            fs::metadata(directory.path()).unwrap().permissions().mode() & 0o777,
             0o700
         );
     }
 
     #[test]
     fn json_precedes_legacy_and_preserves_unknown_fields() {
-        let directory = TestDirectory::new();
+        let directory = tempfile::tempdir().unwrap();
         fs::write(
-            directory.0.join(FILE_NAME),
+            directory.path().join(FILE_NAME),
             r#"{"ear_detection_behavior":2,"future_setting":{"value":42}}"#,
         )
         .unwrap();
         fs::write(
-            directory.0.join("AirPodsTrayApp.conf"),
+            directory.path().join("AirPodsTrayApp.conf"),
             "[earDetection]\nsetting=0",
         )
         .unwrap();
-        let mut settings = Settings::load(&directory.0).unwrap();
+        let mut settings = Settings::load(directory.path()).unwrap();
         assert_eq!(settings.ear_detection_behavior, 2);
         settings.adaptive_noise_level = 20;
-        settings.save(&directory.0).unwrap();
+        settings.save(directory.path()).unwrap();
         let saved: serde_json::Value =
-            serde_json::from_slice(&fs::read(directory.0.join(FILE_NAME)).unwrap()).unwrap();
+            serde_json::from_slice(&fs::read(directory.path().join(FILE_NAME)).unwrap()).unwrap();
         assert_eq!(saved["future_setting"]["value"], 42);
     }
 
     #[test]
     fn corrupt_or_out_of_range_settings_are_not_silently_reset() {
-        let directory = TestDirectory::new();
+        let directory = tempfile::tempdir().unwrap();
         for contents in [
             "{",
             r#"{"ear_detection_behavior":9}"#,
             r#"{"magic_acc_irk":[1]}"#,
             r#"{"adaptive_noise_level":101}"#,
         ] {
-            fs::write(directory.0.join(FILE_NAME), contents).unwrap();
-            assert!(Settings::load(&directory.0).is_err());
+            fs::write(directory.path().join(FILE_NAME), contents).unwrap();
+            assert!(Settings::load(directory.path()).is_err());
             assert_eq!(
-                fs::read_to_string(directory.0.join(FILE_NAME)).unwrap(),
+                fs::read_to_string(directory.path().join(FILE_NAME)).unwrap(),
                 contents
             );
         }

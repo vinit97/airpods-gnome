@@ -5,7 +5,8 @@ if (($#)); then
     printf 'Usage: bash scripts/install.sh\nUse ./setup to install the bundled backend too.\n' >&2
     exit 2
 fi
-require_commands gnome-extensions
+require_commands gnome-extensions gjs
 bash "$project_dir/scripts/pack.sh"
 gnome-extensions install --force "$extension_bundle"
-printf 'Installed. Log out and back in, then run: gnome-extensions enable %q\n' "$extension_uuid"
+enable_extension
+printf 'Extension installed and enabled.\n'

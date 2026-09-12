@@ -746,6 +746,7 @@ mod tests {
         assert!(snapshot.same_sink(&sink).is_none());
     }
 
+    #[derive(Clone)]
     struct TestPlayer {
         state: Arc<Mutex<String>>,
         calls: Arc<Mutex<Vec<String>>>,
@@ -769,26 +770,21 @@ mod tests {
         }
     }
 
-    async fn player(
-        name: &str,
-        state: &Arc<Mutex<String>>,
-        calls: &Arc<Mutex<Vec<String>>>,
-    ) -> zbus::Connection {
-        zbus::connection::Builder::session()
+    async fn player(name: &str, status: &str) -> (TestPlayer, zbus::Connection) {
+        let player = TestPlayer {
+            state: Arc::new(Mutex::new(status.into())),
+            calls: Arc::default(),
+        };
+        let connection = zbus::connection::Builder::session()
             .unwrap()
             .name(name)
             .unwrap()
-            .serve_at(
-                "/org/mpris/MediaPlayer2",
-                TestPlayer {
-                    state: state.clone(),
-                    calls: calls.clone(),
-                },
-            )
+            .serve_at("/org/mpris/MediaPlayer2", player.clone())
             .unwrap()
             .build()
             .await
-            .unwrap()
+            .unwrap();
+        (player, connection)
     }
 
     /// Run with its own environment so fake commands cannot affect parallel tests
@@ -884,17 +880,9 @@ else:
         let directory = std::path::PathBuf::from(
             std::env::var_os("AIRPODS_MEDIA_IO_ROOT").expect("requires isolated parent test"),
         );
-        let state = Arc::new(Mutex::new("Playing".to_owned()));
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let manually_paused = Arc::new(Mutex::new("Paused".to_owned()));
-        let manual_calls = Arc::new(Mutex::new(Vec::new()));
-        let service = player("org.mpris.MediaPlayer2.AirPodsTest", &state, &calls).await;
-        let _manual = player(
-            "org.mpris.MediaPlayer2.AirPodsManual",
-            &manually_paused,
-            &manual_calls,
-        )
-        .await;
+        let (playing, service) = player("org.mpris.MediaPlayer2.AirPodsTest", "Playing").await;
+        let (manual, _manual_service) =
+            player("org.mpris.MediaPlayer2.AirPodsManual", "Paused").await;
         let mut controller = MediaController::new().await.unwrap();
         assert_eq!(controller.next_deadline(), None);
         controller
@@ -902,66 +890,60 @@ else:
             .await
             .unwrap();
         controller.update_ears(true, false).await.unwrap();
-        assert_eq!(*state.lock().unwrap(), "Paused");
+        assert_eq!(*playing.state.lock().unwrap(), "Paused");
         assert_eq!(controller.paused.len(), 1);
         controller.update_ears(true, false).await.unwrap();
-        assert_eq!(*calls.lock().unwrap(), ["Pause"]);
+        assert_eq!(*playing.calls.lock().unwrap(), ["Pause"]);
         controller.update_ears(true, true).await.unwrap();
         controller.tick().await.unwrap();
-        assert_eq!(*state.lock().unwrap(), "Playing");
-        assert_eq!(*calls.lock().unwrap(), ["Pause", "Play"]);
+        assert_eq!(*playing.state.lock().unwrap(), "Playing");
+        assert_eq!(*playing.calls.lock().unwrap(), ["Pause", "Play"]);
         assert!(
-            manual_calls.lock().unwrap().is_empty(),
+            manual.calls.lock().unwrap().is_empty(),
             "never resume a player the user paused"
         );
 
         controller.update_ears(true, false).await.unwrap();
-        *state.lock().unwrap() = "Stopped".into();
+        *playing.state.lock().unwrap() = "Stopped".into();
         controller.update_ears(true, true).await.unwrap();
         controller.tick().await.unwrap();
         assert_eq!(
-            *state.lock().unwrap(),
+            *playing.state.lock().unwrap(),
             "Stopped",
             "respect a manual stop while removed"
         );
-        *state.lock().unwrap() = "Playing".into();
+        *playing.state.lock().unwrap() = "Playing".into();
         controller.update_ears(true, false).await.unwrap();
         service.close().await.unwrap();
-        let replacement_state = Arc::new(Mutex::new("Paused".to_owned()));
-        let replacement_calls = Arc::new(Mutex::new(Vec::new()));
-        let _replacement = player(
-            "org.mpris.MediaPlayer2.AirPodsTest",
-            &replacement_state,
-            &replacement_calls,
-        )
-        .await;
+        let (replacement, _replacement_service) =
+            player("org.mpris.MediaPlayer2.AirPodsTest", "Paused").await;
         controller.update_ears(true, true).await.unwrap();
         controller.tick().await.unwrap();
         assert!(
-            replacement_calls.lock().unwrap().is_empty(),
+            replacement.calls.lock().unwrap().is_empty(),
             "do not resume a restarted player with the old name"
         );
 
         controller.set_ear_detection(2);
-        *replacement_state.lock().unwrap() = "Playing".into();
+        *replacement.state.lock().unwrap() = "Playing".into();
         controller.update_ears(false, false).await.unwrap();
         controller.ears.both_out = None;
-        assert!(replacement_calls.lock().unwrap().is_empty());
+        assert!(replacement.calls.lock().unwrap().is_empty());
         controller.set_ear_detection(1);
         controller.update_ears(true, false).await.unwrap();
         assert!(
-            replacement_calls.lock().unwrap().is_empty(),
+            replacement.calls.lock().unwrap().is_empty(),
             "II keeps playing with one earbud"
         );
         controller.update_ears(false, false).await.unwrap();
         controller.tick().await.unwrap();
         assert!(
-            replacement_calls.lock().unwrap().is_empty(),
+            replacement.calls.lock().unwrap().is_empty(),
             "both-out must settle before pausing"
         );
         controller.ears.both_out = Some(Instant::now());
         controller.tick().await.unwrap();
-        assert_eq!(*replacement_state.lock().unwrap(), "Paused");
+        assert_eq!(*replacement.state.lock().unwrap(), "Paused");
         let snapshot: Vec<Value> =
             serde_json::from_slice(&std::fs::read(directory.join("snapshot.json")).unwrap())
                 .unwrap();
@@ -970,7 +952,7 @@ else:
         controller.tick().await.unwrap();
         controller.profile_due = Some(Instant::now());
         controller.tick().await.unwrap();
-        assert_eq!(*replacement_state.lock().unwrap(), "Playing");
+        assert_eq!(*replacement.state.lock().unwrap(), "Playing");
 
         let read_volume = || {
             std::fs::read_to_string(directory.join("volume"))
