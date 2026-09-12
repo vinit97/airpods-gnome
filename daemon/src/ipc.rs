@@ -15,7 +15,7 @@ pub fn socket_path() -> io::Result<PathBuf> {
     if !dir.is_absolute() {
         return Err(io::Error::other("XDG_RUNTIME_DIR must be absolute"));
     }
-    Ok(dir.join("librepods.sock"))
+    Ok(dir.join("airpods-gnome.sock"))
 }
 
 pub fn user_dir(variable: &str, fallback: &str) -> io::Result<PathBuf> {

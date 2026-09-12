@@ -16,8 +16,9 @@ notifications, headless operation, a user service, and connection fixes.
 
 ## Local integration
 
-The Rust binaries and service use the `airpods-gnome` name and retain the earlier
-status format, socket path, and settings directory. See the [project README](../README.md) for paths.
+The Rust binaries, service, status directory, and runtime socket use the
+`airpods-gnome` name. The status format and saved-settings directory are retained.
+See the [project README](../README.md) for paths.
 Cargo dependencies are pinned in `Cargo.lock`.
 
 Qt windows, translations, GUI resources, the QR-code generator, LibrePods' Android

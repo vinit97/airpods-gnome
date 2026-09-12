@@ -54,8 +54,8 @@ comes from the AirPods. See [behavior details](docs/behavior.md).
 | Backend and command-line client | `~/.local/bin/` |
 | User service | `~/.local/share/systemd/user/airpods-gnome.service` |
 | Saved settings | `~/.config/AirPodsTrayApp/rust-settings.json` |
-| Live status | `~/.local/state/librepods/status.json` |
-| Command socket | `$XDG_RUNTIME_DIR/librepods.sock` |
+| Live status | `~/.local/state/airpods-gnome/status.json` |
+| Command socket | `$XDG_RUNTIME_DIR/airpods-gnome.sock` |
 
 Settings and state follow `XDG_CONFIG_HOME` and `XDG_STATE_HOME` when set.
 Use `journalctl --user -u airpods-gnome.service -b` for logs and

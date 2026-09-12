@@ -192,8 +192,8 @@ class LifecycleTest(unittest.TestCase):
                         XDG_CONFIG_HOME=str(self.root / "config"),
                         DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent-airpods-test-session",
                         DBUS_SYSTEM_BUS_ADDRESS="unix:path=/nonexistent-airpods-test-system")
-        self.socket_path = self.root / "runtime/librepods.sock"
-        self.status_path = self.root / "state/librepods/status.json"
+        self.socket_path = self.root / "runtime/airpods-gnome.sock"
+        self.status_path = self.root / "state/airpods-gnome/status.json"
         self.config_dir = self.root / "config/AirPodsTrayApp"
         self.log = self.root / "daemon.log"
         self.peer = AirPodsPeer(self.root / "peer.sock")

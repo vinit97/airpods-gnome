@@ -75,7 +75,7 @@ async fn run() -> Result<()> {
     }
     let socket = ipc::socket_path()?;
     let _lock = ipc::daemon_lock(&socket)?;
-    let state_dir = ipc::user_dir("XDG_STATE_HOME", ".local/state")?.join("librepods");
+    let state_dir = ipc::user_dir("XDG_STATE_HOME", ".local/state")?.join("airpods-gnome");
     let state = state_dir.join("status.json");
     let _cleanup = Cleanup {
         socket: socket.clone(),

@@ -4,7 +4,7 @@ import GLib from 'gi://GLib';
 import {Backend} from '../backend.js';
 
 const root = GLib.dir_make_tmp('airpods-gnome-test-XXXXXX');
-const directory = `${root}/librepods`;
+const directory = `${root}/airpods-gnome`;
 const path = `${directory}/status.json`;
 const loop = new GLib.MainLoop(null, false);
 let backend;

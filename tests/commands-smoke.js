@@ -115,7 +115,7 @@ async function run() {
 run().catch(error => { failure = error; }).finally(() => loop.quit());
 loop.run();
 backend?.destroy();
-for (const path of [`${root}/librepods`, `${root}/.local/bin/airpods-gnome-ctl`,
+for (const path of [`${root}/airpods-gnome`, `${root}/.local/bin/airpods-gnome-ctl`,
     `${root}/.local/bin`, `${root}/.local`, executable, `${executable}.log`, root]) {
     const file = Gio.File.new_for_path(path);
     if (file.query_exists(null)) file.delete(null);

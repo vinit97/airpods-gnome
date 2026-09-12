@@ -27,8 +27,7 @@ export class Backend {
         this._ctlPath = options.ctlPath;
         this._timeoutMs = options.timeoutMs ?? 5000;
         this._cancel = new Gio.Cancellable();
-        // Keep the schema 1 state location compatible with an already loaded extension.
-        const directory = GLib.build_filenamev([stateHome, 'librepods']);
+        const directory = GLib.build_filenamev([stateHome, 'airpods-gnome']);
         if (GLib.mkdir_with_parents(directory, 0o700) !== 0)
             throw new Error('Cannot access AirPods status directory');
         this._file = Gio.File.new_for_path(GLib.build_filenamev([directory, 'status.json']));

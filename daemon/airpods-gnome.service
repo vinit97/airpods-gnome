@@ -13,7 +13,7 @@ TimeoutStopSec=30
 # The status file carries the AirPods identity, so nothing the daemon creates is world-readable.
 UMask=0077
 # systemd bind-mounts these two writable, which is what carves them out of the read-only home.
-StateDirectory=librepods
+StateDirectory=airpods-gnome
 StateDirectoryMode=0700
 ConfigurationDirectory=AirPodsTrayApp
 ConfigurationDirectoryMode=0700
