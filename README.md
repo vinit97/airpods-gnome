@@ -1,7 +1,6 @@
 # AirPods for GNOME
 
-AirPods battery levels and controls in the GNOME Shell 50 top bar, with an
-included Rust backend and icon source.
+AirPods battery levels and listening controls in the GNOME Shell 50 top bar.
 
 ![AirPods menu](docs/preview.png)
 
@@ -87,11 +86,8 @@ Regenerate icons from `assets/AirPodsIcon.qml` with
 
 ## Credits and license
 
-Extension code: [GPL-3.0-or-later](LICENSE). The bundled
-[GPL-licensed daemon](daemon/LICENSE) derives from
-[LibrePods](https://github.com/librepods-org/librepods) through
-[Omapods](https://github.com/thisisgm/omarchy-pods); see [provenance](daemon/UPSTREAM.md).
+Inspired by [Omapods](https://github.com/thisisgm/omarchy-pods) and
+[LibrePods](https://github.com/librepods-org/librepods).
 
-Icons use Apple's product artwork from Omapods' `AirPodsIcon.qml`, converted to
-SVG. They are excluded from the software license; see [icon credits](icons/README.md).
-This project is independent of Apple.
+[Extension license](LICENSE) · [Backend license](daemon/LICENSE) ·
+[Upstream provenance](daemon/UPSTREAM.md) · [Artwork credits](icons/README.md).
