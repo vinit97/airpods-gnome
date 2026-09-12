@@ -71,6 +71,11 @@ export async function run() {
     await Scripting.sleep(300);
     const screenshotDir = GLib.getenv('AIRPODS_SCREENSHOT_DIR');
     {
+        const previewStatus = {...status, batteries: status.batteries.map(([name, battery]) =>
+            [name, name === 'Case' ? {...battery, level: 68} : battery])};
+        extension._render(previewStatus);
+        assert(extension._batteries[2].percent.text === '68%', 'Reported case battery was not displayed');
+        await Scripting.sleep(100);
         const takeScreenshot = async name => {
             if (!screenshotDir) return;
             const actor = extension._button.menu.actor;
@@ -85,10 +90,10 @@ export async function run() {
             }
         };
         await takeScreenshot('menu');
-        extension._render({...status, ear: 1});
+        extension._render({...previewStatus, ear: 1});
         await Scripting.sleep(100);
         await takeScreenshot('menu-ear-both');
-        extension._render(status);
+        extension._render(previewStatus);
         const context = St.ThemeContext.get_for_stage(global.stage);
         const darkTheme = context.get_theme();
         const lightTheme = new St.Theme({default_stylesheet:
@@ -98,7 +103,7 @@ export async function run() {
         await Scripting.sleep(200);
         await takeScreenshot('menu-light');
         context.set_theme(darkTheme);
-        extension._render({...status, modes: [0, 2, 3, 1]});
+        extension._render({...previewStatus, modes: [0, 2, 3, 1]});
         await Scripting.sleep(100);
         for (const button of extension._modes) {
             const caption = button.get_child().get_last_child();

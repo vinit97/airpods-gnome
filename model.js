@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Vinit Patel
+// Copyright (C) 2026 AirPods for GNOME contributors
 // Schema 1 adapter for the AirPods GNOME Rust backend. No Shell dependencies.
 export const MODES = [
     ['Off', 'noise:off'],

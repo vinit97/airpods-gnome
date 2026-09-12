@@ -1,6 +1,7 @@
 # Project conventions
 
-- Keep personal names out of the README.
+- Use project identifiers and contributor attribution. Keep local usernames and
+  machine-specific paths out of tracked files; preserve upstream credits.
 - Build from `daemon/` and regenerate icons from `assets/AirPodsIcon.qml`;
   never download another project's checkout during a build.
 - Preserve upstream licenses and provenance. Output belongs in `build/` and
