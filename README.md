@@ -2,6 +2,10 @@
 
 AirPods battery levels and listening controls in the GNOME Shell 50 top bar.
 
+Shared as-is, with no commitment to maintenance, support, or pull request reviews.
+For fixes or new features, fork this repository and point your coding agent at
+[AGENTS.md](AGENTS.md). Review and test changes in your fork.
+
 ![AirPods menu](docs/preview.png)
 
 Preview uses sample data. [Light theme](docs/preview-light.png).
