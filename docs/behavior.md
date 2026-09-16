@@ -24,3 +24,9 @@ state instead of separate earbuds and a case.
 The Adaptive slider is available in Adaptive mode. Ear Detection supports clicks,
 Space, and arrow keys. For installation and dependencies, see the
 [project README](../README.md).
+
+Bluetooth advertisements supplement battery readings only after the model is
+known from the control connection or saved settings. Their payloads cannot be
+authenticated or checked for replay, so broadcast battery readings are advisory.
+Advertisements never change model identity, capabilities, or wearing state;
+Ear Detection uses reports from the control connection.

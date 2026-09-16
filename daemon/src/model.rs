@@ -195,22 +195,19 @@ impl Status {
         }
     }
 
-    /// Call only after authenticating the advertisement's address with its IRK.
-    pub fn apply_ble(&mut self, adv: &Advertisement, decrypted: &[u8; 16]) {
-        let model = model_from_ble(adv.model_id);
-        if model != 0 {
-            self.set_model_id(model);
+    /// Battery hints only, after resolving the address with the saved IRK.
+    /// Broadcasts have no authentication tag or freshness guarantee, so they
+    /// must never change device identity, capabilities, or AAP wearing state.
+    pub fn apply_ble_battery(&mut self, adv: &Advertisement, decrypted: &[u8; 16]) {
+        if self.model_int == 0 {
+            return;
         }
         if self.is_headset {
-            self.primary = Component::Headset;
             self.headset
                 .update(decrypted[1] & 0x7f, decrypted[1] & 0x80 != 0);
         } else {
-            self.primary = if adv.primary_left {
-                Component::Left
-            } else {
-                Component::Right
-            };
+            // Broadcast ordering applies only to these battery slots. AAP ear
+            // notifications must keep the primary reported on the control link.
             let (left, right) = if adv.primary_left {
                 (decrypted[1], decrypted[2])
             } else {
@@ -231,20 +228,6 @@ impl Status {
                 }
             }
         }
-        self.primary_ear =
-            if (adv.primary_left && adv.left_in_ear) || (!adv.primary_left && adv.right_in_ear) {
-                EarState::InEar
-            } else {
-                EarState::Out
-            };
-        self.secondary_ear =
-            if (adv.primary_left && adv.right_in_ear) || (!adv.primary_left && adv.left_in_ear) {
-                EarState::InEar
-            } else {
-                EarState::Out
-            };
-        self.update_ears();
-        self.lid_state = adv.lid_state;
     }
 }
 
@@ -262,23 +245,6 @@ pub fn model_from_number(number: &str) -> u8 {
         "A3056" | "A3055" | "A3057" => 10,
         "A3063" | "A3064" | "A3065" => 11,
         "A3454" => 12,
-        _ => 0,
-    }
-}
-
-pub fn model_from_ble(id: u16) -> u8 {
-    match id {
-        0x0220 => 1,
-        0x0f20 => 2,
-        0x1320 => 3,
-        0x0e20 => 4,
-        0x1420 => 5,
-        0x2420 => 6,
-        0x0a20 => 7,
-        0x1f20 => 8,
-        0x1920 => 9,
-        0x1b20 => 10,
-        0x2720 => 11,
         _ => 0,
     }
 }
@@ -303,18 +269,23 @@ pub fn model_name(id: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ComponentReading;
+    use crate::protocol::{self, ComponentReading};
+
+    fn status_for(number: &str) -> Status {
+        let mut status = Status::default();
+        status.apply(&Event::Metadata {
+            name: "AirPods".into(),
+            model_number: number.into(),
+        });
+        status
+    }
 
     fn adv(primary_left: bool, pod_in_case: bool, case_level: Option<u8>) -> Advertisement {
         Advertisement {
-            model_id: 0x2720,
             primary_left,
             pod_in_case,
-            left_in_ear: true,
-            right_in_ear: false,
             case_level,
             case_charging: true,
-            lid_state: 0,
             encrypted_payload: [0; 16],
         }
     }
@@ -353,71 +324,70 @@ mod tests {
 
     #[test]
     fn encrypted_batteries_follow_primary_flip_without_rounding() {
-        let mut s = Status::default();
+        let mut s = status_for("A3064");
         let mut data = [0; 16];
         data[1] = 71;
         data[2] = 83;
         data[3] = 0x80 | 46;
-        s.apply_ble(&adv(true, false, Some(50)), &data);
+        s.apply_ble_battery(&adv(true, false, Some(50)), &data);
         assert_eq!((s.left.level, s.right.level, s.case.level), (71, 83, 46));
         assert!(s.case.charging);
-        s.apply_ble(&adv(false, false, None), &data);
+        s.apply_ble_battery(&adv(false, false, None), &data);
         assert_eq!((s.left.level, s.right.level), (83, 71));
-        assert_eq!(s.ears_in(), (true, false));
+        assert_eq!(s.ears_in(), (false, false));
     }
 
     #[test]
     fn case_falls_back_to_broadcast_without_overwriting_exact_data() {
-        let mut s = Status::default();
+        let mut s = status_for("A3064");
         let mut data = [0x7f; 16];
         data[3] = 0;
-        s.apply_ble(&adv(true, false, Some(60)), &data);
+        s.apply_ble_battery(&adv(true, false, Some(60)), &data);
         assert!(s.case.available);
         assert_eq!(s.case.level, 60);
         assert!(!s.left.available);
-        s.apply_ble(&adv(true, false, Some(70)), &data);
+        s.apply_ble_battery(&adv(true, false, Some(70)), &data);
         assert_eq!(s.case.level, 70);
         data[3] = 63;
-        s.apply_ble(&adv(true, false, Some(60)), &data);
+        s.apply_ble_battery(&adv(true, false, Some(60)), &data);
         assert_eq!(s.case.level, 63);
         data[3] = 0x7f;
-        s.apply_ble(&adv(true, false, Some(60)), &data);
+        s.apply_ble_battery(&adv(true, false, Some(60)), &data);
         assert_eq!(s.case.level, 63);
         data[3] = 0;
-        s.apply_ble(&adv(true, true, Some(0)), &data);
+        s.apply_ble_battery(&adv(true, true, Some(0)), &data);
         assert_eq!(s.case.level, 0); // Docked 0 is a measured empty case.
     }
 
     #[test]
     fn unknown_and_invalid_decrypted_levels_preserve_last_known_values() {
-        let mut s = Status::default();
+        let mut s = status_for("A3064");
         let mut data = [0; 16];
         data[1] = 41;
         data[2] = 63;
         data[3] = 54;
-        s.apply_ble(&adv(true, false, None), &data);
+        s.apply_ble_battery(&adv(true, false, None), &data);
         data[1] = 0xff;
         data[2] = 101;
         data[3] = 0;
-        s.apply_ble(&adv(true, false, None), &data);
+        s.apply_ble_battery(&adv(true, false, None), &data);
         assert_eq!((s.left.level, s.right.level, s.case.level), (41, 63, 54));
     }
 
     #[test]
     fn headset_never_gets_a_case_or_duplicate_pod_batteries() {
-        let mut s = Status::default();
-        let mut advertisement = adv(false, false, Some(0));
-        advertisement.model_id = 0x0a20;
+        let mut s = status_for("A2096");
+        let advertisement = adv(false, false, Some(0));
         let mut data = [0; 16];
         data[1] = 78;
         data[2] = 23;
-        s.apply_ble(&advertisement, &data);
+        s.apply_ble_battery(&advertisement, &data);
         assert_eq!(s.headset.level, 78);
         assert!(!s.left.available && !s.right.available && !s.case.available);
     }
 
     #[test]
-    fn capability_matrix_and_unknown_ble_preserve_metadata_identity() {
+    fn capability_matrix_from_control_metadata() {
         let mut s = Status::default();
         for (number, noise, adaptive, headset, off) in [
             ("A3064", true, true, false, false),
@@ -438,11 +408,121 @@ mod tests {
                 (noise, adaptive, headset, off)
             );
         }
-        s.set_model_number("A3064");
-        let mut unknown = adv(true, false, None);
-        unknown.model_id = 0xffff;
-        s.apply_ble(&unknown, &[0x7f; 16]);
-        assert_eq!(s.model_int, 11);
+    }
+
+    #[test]
+    fn replayed_ble_headers_cannot_change_controls_or_aap_ear_mapping() {
+        // Public Bluetooth Core RPA and NIST AES examples, not device keys.
+        let irk = [
+            0x9b, 0x7d, 0x39, 0x0a, 0xa6, 0x10, 0x10, 0x34, 0x05, 0xad, 0xc8, 0x57, 0xa3, 0x34,
+            0x02, 0xec,
+        ];
+        let key = std::array::from_fn(|i| i as u8);
+        let address = "70:81:94:0D:FB:AA";
+        let captured = [
+            0x07, 0x19, 0x01, 0x27, 0x20, 0x2a, 0x88, 0x8f, 0x11, 0x00, 0x04, 0x69, 0xc4, 0xe0,
+            0xd8, 0x6a, 0x7b, 0x04, 0x30, 0xd8, 0xcd, 0xb7, 0x80, 0x70, 0xb4, 0xc5, 0x5a,
+        ];
+        assert!(protocol::verify_rpa(address, &irk));
+
+        for number in ["A3064", "A2096"] {
+            for claimed_model in [[0x02, 0x20], [0x0a, 0x20], [0xff, 0xff]] {
+                for flags in [0, 0x20, 0x2a, 0x60, 0xff] {
+                    let mut status = status_for(number);
+                    status.apply(&Event::Battery(vec![ComponentReading {
+                        component: if status.is_headset {
+                            Component::Headset
+                        } else {
+                            Component::Right
+                        },
+                        level: 80,
+                        charging: false,
+                        available: true,
+                    }]));
+                    status.apply(&Event::Ear {
+                        primary: EarState::InEar,
+                        secondary: EarState::Out,
+                    });
+                    let before = status.clone();
+
+                    // An attacker needs only the captured frame to edit these
+                    // public fields; the address and ciphertext stay identical.
+                    let mut forged = captured;
+                    forged[3..5].copy_from_slice(&claimed_model);
+                    forged[5] = flags;
+                    forged[8] = 0xff;
+                    let advertisement = protocol::parse_advertisement(&forged).unwrap();
+                    let battery =
+                        protocol::decrypt_battery(&advertisement.encrypted_payload, &key).unwrap();
+                    status.apply_ble_battery(&advertisement, &battery);
+
+                    // All fields except battery readings must be unchanged,
+                    // including private primary mapping and public in_ear bits.
+                    let mut controls = status.clone();
+                    for (actual, original) in [
+                        (&mut controls.left, &before.left),
+                        (&mut controls.right, &before.right),
+                        (&mut controls.case, &before.case),
+                        (&mut controls.headset, &before.headset),
+                    ] {
+                        actual.available = original.available;
+                        actual.level = original.level;
+                        actual.charging = original.charging;
+                    }
+                    controls.case_is_exact = before.case_is_exact;
+                    assert_eq!(controls, before);
+                    if status.is_headset {
+                        assert_eq!(status.headset.level, 17);
+                        assert!(
+                            !status.left.available
+                                && !status.right.available
+                                && !status.case.available
+                        );
+                    } else {
+                        let expected = if flags & 0x20 != 0 {
+                            (17, 34)
+                        } else {
+                            (34, 17)
+                        };
+                        assert_eq!((status.left.level, status.right.level), expected);
+                        assert_eq!(status.case.level, 51);
+                    }
+
+                    // A later AAP event must not use the forged BLE primary.
+                    status.apply(&Event::Ear {
+                        primary: EarState::Out,
+                        secondary: EarState::InEar,
+                    });
+                    status.apply(&Event::Battery(vec![ComponentReading {
+                        component: Component::Case,
+                        level: 46,
+                        charging: false,
+                        available: true,
+                    }]));
+                    assert_eq!(
+                        status.ears_in(),
+                        if status.is_headset {
+                            (false, false)
+                        } else {
+                            (true, false)
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ble_cannot_identify_an_unknown_model() {
+        let mut status = Status::default();
+        let before = status.clone();
+        let packet = [
+            0x07, 0x19, 0x01, 0x27, 0x20, 0x2a, 0x88, 0x46, 0x11, 0x00, 0x04, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let advertisement = protocol::parse_advertisement(&packet).unwrap();
+        status.apply_ble_battery(&advertisement, &[50; 16]);
+        assert_eq!(status, before);
     }
 
     #[test]

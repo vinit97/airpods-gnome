@@ -65,6 +65,8 @@ socket. Keep device and audio logic in Rust, and presentation in the extension.
 - Paths in the README are active interfaces. Coordinate path changes across the
   daemon, client, extension, service, and tests. Preserve XDG handling, private
   file permissions, atomic writes, and the single-daemon lock.
+- The extension follows `XDG_DATA_HOME`; settings and state follow
+  `XDG_CONFIG_HOME` and `XDG_STATE_HOME` when set.
 - Preserve unknown JSON settings fields. Invalid settings must not silently
   overwrite saved preferences with defaults.
 - Keep Shell I/O asynchronous. Release monitors, signals, timers, and subprocesses

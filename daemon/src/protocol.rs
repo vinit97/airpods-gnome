@@ -239,18 +239,16 @@ fn parse_battery(data: &[u8]) -> Result<Vec<ComponentReading>, ParseError> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Advertisement {
-    pub model_id: u16,
     pub primary_left: bool,
     pub pod_in_case: bool,
-    pub left_in_ear: bool,
-    pub right_in_ear: bool,
     pub case_level: Option<u8>,
     pub case_charging: bool,
-    pub lid_state: u8,
     pub encrypted_payload: [u8; 16],
 }
 
 /// Manufacturer data for Apple's company ID 0x004c, excluding that ID.
+/// Retain only battery hints: unprotected model and wearing fields cannot be
+/// trusted, even when the advertisement's address resolves with the saved IRK.
 /// The unencrypted pod percentages are deliberately not exposed: they are
 /// rounded to tens and must never overwrite the independently measured values.
 pub fn parse_advertisement(data: &[u8]) -> Option<Advertisement> {
@@ -260,22 +258,18 @@ pub fn parse_advertisement(data: &[u8]) -> Option<Advertisement> {
     let status = data[5];
     let primary_left = status & 0x20 != 0;
     let pod_in_case = status & 0x40 != 0;
-    let flipped = !primary_left ^ pod_in_case;
     let case_nibble = data[7] & 0x0f;
     Some(Advertisement {
-        model_id: u16::from_be_bytes([data[3], data[4]]),
         primary_left,
         pod_in_case,
-        left_in_ear: status & if flipped { 0x08 } else { 0x02 } != 0,
-        right_in_ear: status & if flipped { 0x02 } else { 0x08 } != 0,
         case_level: (case_nibble <= 10).then(|| case_nibble * 10),
         case_charging: data[7] & 0x40 != 0,
-        lid_state: if pod_in_case { (data[8] >> 3) & 1 } else { 2 },
         encrypted_payload: data[11..27].try_into().ok()?,
     })
 }
 
-/// Verify a random Bluetooth address before accepting another device's BLE data.
+/// Resolve a random Bluetooth address before considering its battery hints.
+/// This does not authenticate the payload or prevent replay of a captured RPA.
 /// Bluetooth ah() uses reversed key/data byte order relative to AES notation.
 pub fn verify_rpa(address: &str, irk: &[u8; 16]) -> bool {
     let parts: Vec<_> = address.split(':').collect();
@@ -305,8 +299,8 @@ pub fn verify_rpa(address: &str, irk: &[u8; 16]) -> bool {
 }
 
 /// A single AES-CBC block with a zero IV equals a single AES block decryption.
-/// The protocol supplies no authentication tag; RPA identity must be checked
-/// separately and every decoded percentage is range checked by the model.
+/// The protocol supplies no authentication tag or freshness check. Even after
+/// RPA resolution, decoded values are only advisory battery measurements.
 pub fn decrypt_battery(payload: &[u8], key: &[u8; 16]) -> Option<[u8; 16]> {
     let input: [u8; 16] = payload.try_into().ok()?;
     let cipher = Aes128::new(&(*key).into());
@@ -432,7 +426,6 @@ mod tests {
     fn captured_ble_frame_and_case_unknown() {
         let packet = bytes("071901272021888f110004b48a83d66c322a4745cb15da3fd6ab2b");
         let adv = parse_advertisement(&packet).unwrap();
-        assert_eq!(adv.model_id, 0x2720);
         assert_eq!(adv.case_level, None);
         assert!(adv.primary_left);
         for n in 0..packet.len() {
@@ -444,7 +437,7 @@ mod tests {
         let adv = parse_advertisement(&docked).unwrap();
         assert_eq!(adv.case_level, Some(60));
         assert!(adv.case_charging);
-        assert_eq!(adv.lid_state, 0);
+        assert!(adv.pod_in_case);
     }
 
     #[test]

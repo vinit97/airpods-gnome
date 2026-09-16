@@ -227,7 +227,7 @@ impl App {
                     && let Some(ad) = protocol::parse_advertisement(&data)
                     && let Some(bytes) = protocol::decrypt_battery(&ad.encrypted_payload, &key)
                 {
-                    self.status.apply_ble(&ad, &bytes);
+                    self.status.apply_ble_battery(&ad, &bytes);
                 }
             }
             bluetooth::Event::Packet(data) => {

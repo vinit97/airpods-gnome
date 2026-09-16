@@ -23,6 +23,10 @@ Run `./setup` as your desktop user, without sudo. It builds/tests the backend,
 installs both components under `~/.local`, enables the extension, and starts
 `airpods-gnome.service`. Run it again to update; saved settings are kept.
 
+The Shell extension follows GNOME's [per-user ZIP installation](https://gjs.guide/extensions/overview/anatomy.html#extension-zip):
+`gnome-extensions pack` creates the bundle and `gnome-extensions install --force`
+installs it. The Rust backend is installed separately and is not included in the ZIP.
+
 - **Build:** Rust/Cargo, GCC, Python 3, Bash, and `gnome-extensions`.
   Cargo downloads the libraries pinned in `daemon/Cargo.lock`.
 - **Runtime:** GNOME Shell 50/GJS, BlueZ, PipeWire/WirePlumber (`pw-dump` and
@@ -51,13 +55,13 @@ comes from the AirPods. See [behavior details](docs/behavior.md).
 
 | File | Default location |
 | --- | --- |
+| GNOME Shell extension | `~/.local/share/gnome-shell/extensions/airpods@airpods-gnome/` |
 | Backend and command-line client | `~/.local/bin/` |
 | User service | `~/.local/share/systemd/user/airpods-gnome.service` |
 | Saved settings | `~/.config/AirPodsTrayApp/rust-settings.json` |
 | Live status | `~/.local/state/airpods-gnome/status.json` |
 | Command socket | `$XDG_RUNTIME_DIR/airpods-gnome.sock` |
 
-Settings and state follow `XDG_CONFIG_HOME` and `XDG_STATE_HOME` when set.
 Use `journalctl --user -u airpods-gnome.service -b` for logs and
 `~/.local/bin/airpods-gnome-ctl status` for current readings.
 
