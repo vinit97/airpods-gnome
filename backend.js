@@ -5,6 +5,42 @@ import GLib from 'gi://GLib';
 import {parseStatus, validCommand} from './model.js';
 
 const statusDecoder = new TextDecoder();
+const MAX_STATUS_BYTES = 64 * 1024;
+const MAX_COMMAND_ERROR_BYTES = 64 * 1024;
+
+// Bound the reads themselves, including files that grow after they are opened.
+async function readLimited(stream, limit, cancel) {
+    const chunks = [];
+    let length = 0;
+    try {
+        while (true) {
+            const bytes = await new Promise((resolve, reject) => {
+                stream.read_bytes_async(Math.min(8192, limit + 1 - length), GLib.PRIORITY_DEFAULT, cancel,
+                    (input, result) => {
+                        try { resolve(input.read_bytes_finish(result).get_data()); }
+                        catch (error) { reject(error); }
+                    });
+            });
+            if (!bytes.length) break;
+            length += bytes.length;
+            if (length > limit) throw new Error('AirPods input exceeds size limit');
+            chunks.push(bytes);
+        }
+        const contents = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of chunks) {
+            contents.set(chunk, offset);
+            offset += chunk.length;
+        }
+        return contents;
+    } finally {
+        // Closing must still run when the read was canceled during disable.
+        await new Promise(resolve => stream.close_async(GLib.PRIORITY_DEFAULT, null, (input, result) => {
+            try { input.close_finish(result); } catch { /* The read error takes precedence. */ }
+            resolve();
+        }));
+    }
+}
 
 export function findControlExecutable(home = GLib.get_home_dir(), findInPath = name => GLib.find_program_in_path(name)) {
     const local = GLib.build_filenamev([home, '.local', 'bin', 'airpods-gnome-ctl']);
@@ -40,7 +76,17 @@ export class Backend {
         this.refresh();
     }
 
-    refresh() {
+    async _readStatus() {
+        const stream = await new Promise((resolve, reject) => {
+            this._file.read_async(GLib.PRIORITY_DEFAULT, this._cancel, (file, result) => {
+                try { resolve(file.read_finish(result)); }
+                catch (error) { reject(error); }
+            });
+        });
+        return readLimited(stream, MAX_STATUS_BYTES, this._cancel);
+    }
+
+    async refresh() {
         if (!this._alive) return;
         // Atomic replacements can emit several events. Read once at a time,
         // then pick up the newest snapshot if anything changed during the read.
@@ -49,37 +95,35 @@ export class Backend {
             return;
         }
         this._reading = true;
-        this._file.load_contents_async(this._cancel, (file, result) => {
-            let status, contents, readError;
-            try {
-                const [, bytes] = file.load_contents_finish(result);
-                if (this._alive && !this._refreshAgain) {
-                    contents = statusDecoder.decode(bytes);
-                    if (contents !== this._lastContents) status = parseStatus(contents);
-                }
-            } catch (error) {
-                if (this._alive && !this._refreshAgain) {
-                    // The same contents must be delivered again after a service
-                    // outage or parse error, since the UI was hidden on failure.
-                    this._lastContents = null;
-                    const missing = error.matches?.(Gio.io_error_quark(), Gio.IOErrorEnum.NOT_FOUND);
-                    readError = missing ? 'AirPods service is not running' : error.message;
-                }
+        let status, contents, readError;
+        try {
+            const bytes = await this._readStatus();
+            if (this._alive && !this._refreshAgain) {
+                contents = statusDecoder.decode(bytes);
+                if (contents !== this._lastContents) status = parseStatus(contents);
             }
-            // UI exceptions must not be reported as a failure to read the service.
-            try {
-                if (status) {
-                    this._onStatus(status);
-                    this._lastContents = contents;
-                } else if (readError) this._onError(readError, 'status');
-            } finally {
-                this._reading = false;
-                if (this._refreshAgain) {
-                    this._refreshAgain = false;
-                    this.refresh();
-                }
+        } catch (error) {
+            if (this._alive && !this._refreshAgain) {
+                // The same contents must be delivered again after a service
+                // outage or parse error, since the UI was hidden on failure.
+                this._lastContents = null;
+                const missing = error.matches?.(Gio.io_error_quark(), Gio.IOErrorEnum.NOT_FOUND);
+                readError = missing ? 'AirPods service is not running' : error.message;
             }
-        });
+        }
+        // UI exceptions must not be reported as a failure to read the service.
+        try {
+            if (status) {
+                this._onStatus(status);
+                this._lastContents = contents;
+            } else if (readError) this._onError(readError, 'status');
+        } finally {
+            this._reading = false;
+            if (this._refreshAgain) {
+                this._refreshAgain = false;
+                this.refresh();
+            }
+        }
     }
 
     command(verb, selection = null) {
@@ -122,15 +166,7 @@ export class Backend {
             cancel.cancel();
             return GLib.SOURCE_REMOVE;
         });
-        process.communicate_utf8_async(null, cancel, (proc, result) => {
-            let message;
-            try {
-                const [, , stderr] = proc.communicate_utf8_finish(result);
-                if (!proc.get_successful())
-                    message = stderr.trim().slice(0, 160) || 'AirPods command failed';
-            } catch (error) {
-                message = error.message;
-            }
+        this._readCommand(process, cancel).then(message => {
             if (timedOut) message = 'AirPods command timed out';
             if (this._timeout) GLib.Source.remove(this._timeout);
             this._timeout = 0;
@@ -145,6 +181,25 @@ export class Backend {
                 this._runNext();
             }
         });
+    }
+
+    async _readCommand(process, cancel) {
+        try {
+            const [bytes] = await Promise.all([
+                readLimited(process.get_stderr_pipe(), MAX_COMMAND_ERROR_BYTES, cancel),
+                new Promise((resolve, reject) => process.wait_async(cancel, (proc, result) => {
+                    try { proc.wait_finish(result); resolve(); }
+                    catch (error) { reject(error); }
+                })),
+            ]);
+            if (!process.get_successful())
+                return statusDecoder.decode(bytes).trim().slice(0, 160) || 'AirPods command failed';
+        } catch (error) {
+            process.force_exit();
+            cancel.cancel();
+            return error.message;
+        }
+        return null;
     }
 
     _failCommands(message, command) {

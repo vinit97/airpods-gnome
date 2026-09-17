@@ -9,6 +9,7 @@ state instead of separate earbuds and a case.
 | Select a listening mode | Updates immediately; a matching AirPods report confirms it. Unsupported modes are hidden. Scroll or right-click the indicator to cycle modes. |
 | Change controls quickly | The latest queued choice wins; stale replies cannot undo it. The Adaptive slider follows the pointer and combines intermediate changes. |
 | A command fails or times out | The control quietly returns to the reported value. Technical details stay in logs. |
+| A status snapshot is malformed or exceeds 64 KiB | Hides the indicator until a valid snapshot arrives. |
 | Conversation Awareness detects speech | Music continues at about 20% of its previous volume, rounded to five-percentage-point steps, with no added start delay. |
 | Speech ends or Conversation Awareness is disabled | Restores volume only if the output is the same and its volume was not changed manually. Temporary failures retry up to six times, 1.5 seconds apart; renewed speech cancels a pending restoration. |
 | Ear Detection Off | Stops automatic playback control without resuming paused music. |
@@ -30,3 +31,7 @@ known from the control connection or saved settings. Their payloads cannot be
 authenticated or checked for replay, so broadcast battery readings are advisory.
 Advertisements never change model identity, capabilities, or wearing state;
 Ear Detection uses reports from the control connection.
+
+Command diagnostics and audio-helper output are limited to 64 KiB per stream,
+except PipeWire snapshots, which allow up to 16 MiB. Excess output fails the
+operation and stops the helper; later commands and existing retries can continue.

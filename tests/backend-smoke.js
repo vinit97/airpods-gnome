@@ -39,13 +39,37 @@ async function run() {
     await until(() => statuses.length > beforeRecovery && statuses.at(-1)?.name === 'Replacement',
         'Restoring identical valid contents after a parse error did not recover');
 
+    const maximumBytes = 64 * 1024;
+    const boundaryStatus = JSON.stringify({schema_version: 1, connected: true, device_name: 'Boundary'});
+    const exactLimit = boundaryStatus.padEnd(maximumBytes, ' ');
+    GLib.file_set_contents(path, exactLimit);
+    await until(() => statuses.at(-1)?.name === 'Boundary', 'Valid status at the byte limit was rejected');
+    const beforeOversized = errors.length;
+    const beforeOversizedStatus = statuses.length;
+    GLib.file_set_contents(path, `${exactLimit} `);
+    await until(() => errors.length > beforeOversized, 'Oversized status was not rejected');
+    assert(errors.at(-1).kind === 'status' && errors.at(-1).message.includes('size limit'),
+        'Oversized status did not report a size error');
+    assert(statuses.length === beforeOversizedStatus, 'Oversized status reached the UI');
+    GLib.file_set_contents(path, exactLimit);
+    await until(() => statuses.length > beforeOversizedStatus && statuses.at(-1)?.name === 'Boundary',
+        'Identical valid status did not recover after oversized input');
+
+    const beforeMultibyte = errors.length;
+    GLib.file_set_contents(path, JSON.stringify({schema_version: 1, device_name: 'é'.repeat(maximumBytes / 2)}));
+    await until(() => errors.length > beforeMultibyte, 'Status limit counted characters instead of bytes');
+    assert(errors.at(-1).message.includes('size limit'), 'Multibyte oversized status had the wrong error');
+    GLib.file_set_contents(path, '{"schema_version":1,"connected":true,"device_name":"Replacement"}');
+    await until(() => statuses.at(-1)?.name === 'Replacement', 'Valid status did not recover after multibyte overflow');
+
     await sleep(100);
-    const load = backend._file.load_contents_async.bind(backend._file);
+    const load = backend._readStatus.bind(backend);
     let reads = 0, activeReads = 0, peakReads = 0;
-    backend._file.load_contents_async = (cancel, done) => {
+    backend._readStatus = async () => {
         reads++;
         peakReads = Math.max(peakReads, ++activeReads);
-        load(cancel, (file, result) => { activeReads--; done(file, result); });
+        try { return await load(); }
+        finally { activeReads--; }
     };
     const beforeRefresh = statuses.length;
     for (let i = 0; i < 50; i++) backend.refresh();
@@ -59,6 +83,23 @@ async function run() {
     for (let i = 0; i < 50; i++) backend.refresh();
     await until(() => statuses.at(-1)?.name === 'Latest', 'Coalescing lost the newest status during a read');
     assert(peakReads === 1, 'Concurrent file changes started overlapping reads');
+
+    // A stale read error must not hide a newer atomic replacement.
+    await sleep(100);
+    const trackedLoad = backend._readStatus.bind(backend);
+    let releaseRead;
+    backend._readStatus = async () => {
+        backend._readStatus = trackedLoad;
+        await new Promise(resolve => { releaseRead = resolve; });
+        throw new Error('AirPods input exceeds size limit');
+    };
+    const beforeStale = errors.length;
+    backend.refresh();
+    GLib.file_set_contents(path, '{"schema_version":1,"connected":true,"device_name":"Newest"}');
+    backend.refresh();
+    releaseRead();
+    await until(() => statuses.at(-1)?.name === 'Newest', 'Stale oversized read lost the newer status');
+    assert(errors.length === beforeStale, 'Superseded oversized read hid the newer status');
 
     await sleep(100);
     const beforeUnrelated = statuses.length + errors.length;
@@ -84,7 +125,7 @@ async function run() {
     backend.refresh();
     await sleep(100);
     assert(statuses.length + errors.length === beforeDestroy, 'Disable delivered a stale status callback');
-    print('PASS: missing status, atomic updates, coalesced reads, unchanged status filtering, latest snapshot, error/restart recovery, file filtering, disable cleanup');
+    print('PASS: missing status, atomic updates, byte limits, overflow recovery, coalesced reads, unchanged status filtering, latest snapshot, stale error suppression, error/restart recovery, file filtering, disable cleanup');
 }
 run().catch(error => { failure = error; }).finally(() => loop.quit());
 loop.run();

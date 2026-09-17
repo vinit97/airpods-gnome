@@ -10,6 +10,8 @@ case "$1" in
     noise:off) echo 'Device refused command' >&2; exit 1 ;;
     adaptive:42) exec sleep 2 ;;
     adaptive:43) sleep 1.2 & wait ;;
+    adaptive:44) exec head -c 65537 /dev/zero >&2 ;;
+    adaptive:45) exec head -c 65536 /dev/zero >&2 ;;
     *) sleep 0.05 ;;
 esac
 `);
@@ -86,6 +88,25 @@ async function run() {
         'Timeout with inherited stderr was not reported');
     assert(!backend._commandCancel && !backend._timeout, 'Completed commands left cancellation or deadline state');
 
+    const oversizedSelection = {};
+    const beforeOversized = errors.length;
+    backend.command('adaptive:44', oversizedSelection);
+    backend.command('ear:one');
+    await idle();
+    const oversizedFailures = errors.slice(beforeOversized).filter(e => e.kind === 'command');
+    assert(oversizedFailures.length === 1 && oversizedFailures[0].command === 'adaptive:44'
+        && oversizedFailures[0].selection === oversizedSelection && oversizedFailures[0].message.includes('size limit'),
+        'Excess command output did not report exactly one correlated size failure');
+    const [, afterOversized] = GLib.file_get_contents(`${executable}.log`);
+    assert(new TextDecoder().decode(afterOversized).trim().endsWith('adaptive:44\near:one'),
+        'Excess command output prevented the next queued control from running');
+    assert(!backend._commandCancel && !backend._timeout, 'Excess command output left cancellation or deadline state');
+    const beforeBoundary = errors.length;
+    backend.command('adaptive:45');
+    await idle();
+    assert(!errors.slice(beforeBoundary).some(e => e.kind === 'command'),
+        'Command output at the byte limit was rejected');
+
     backend.command('noise:anc');
     const discarded = [{}, {}, {}];
     backend.command('ca:off', discarded[0]);
@@ -110,7 +131,7 @@ async function run() {
     assert(backend._queue.length === 0 && !backend._process && !backend._timeout && !backend._commandCancel,
         'Disable left pending commands or deadline state');
     assert(errors.length === count, 'Disable delivered a stale callback');
-    print('PASS: backend lookup, command validation, coalescing, failure correlation, bounded timeouts, launcher failure, disable cleanup');
+    print('PASS: backend lookup, command validation, coalescing, failure correlation, bounded output, overflow recovery, bounded timeouts, launcher failure, disable cleanup');
 }
 run().catch(error => { failure = error; }).finally(() => loop.quit());
 loop.run();

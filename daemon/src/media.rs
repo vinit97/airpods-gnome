@@ -8,7 +8,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use futures_util::future::join_all;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::process::Stdio;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -19,6 +21,8 @@ const PROFILE_RETRY: Duration = Duration::from_millis(1500);
 const CAPTURE_RECHECK: Duration = Duration::from_secs(10);
 const VOLUME_RETRY: Duration = Duration::from_millis(1500);
 const MAX_VOLUME_RETRIES: u8 = 6;
+const MAX_COMMAND_OUTPUT: usize = 64 * 1024;
+const MAX_SNAPSHOT_OUTPUT: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EarAction {
@@ -426,29 +430,85 @@ impl MediaController {
     }
 }
 
-async fn command(program: &str, arguments: &[&str]) -> Result<Vec<u8>> {
-    let output = timeout(
-        AUDIO_TIMEOUT,
-        Command::new(program)
-            .args(arguments)
-            .env("LC_ALL", "C")
-            .kill_on_drop(true)
-            .output(),
-    )
+async fn read_output(mut pipe: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        // Read at most one byte beyond the limit, including at an exact fit.
+        let capacity = buffer.len().min(limit - output.len() + 1);
+        let read = pipe.read(&mut buffer[..capacity]).await?;
+        if read == 0 {
+            return Ok(output);
+        }
+        if read > limit - output.len() {
+            bail!("output exceeds {limit}-byte limit");
+        }
+        output.extend_from_slice(&buffer[..read]);
+    }
+}
+
+async fn command(program: &str, arguments: &[&str], stdout_limit: usize) -> Result<Vec<u8>> {
+    let mut child = Command::new(program)
+        .args(arguments)
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("could not run {program}"))?;
+    let stdout = child.stdout.take().context("missing command stdout")?;
+    let stderr = child.stderr.take().context("missing command stderr")?;
+    let result = timeout(AUDIO_TIMEOUT, async {
+        // Drain both pipes concurrently so neither can block the other.
+        tokio::try_join!(
+            async {
+                read_output(stdout, stdout_limit)
+                    .await
+                    .with_context(|| format!("{program} stdout"))
+            },
+            async {
+                read_output(stderr, MAX_COMMAND_OUTPUT)
+                    .await
+                    .with_context(|| format!("{program} stderr"))
+            },
+            async {
+                child
+                    .wait()
+                    .await
+                    .with_context(|| format!("could not wait for {program}"))
+            },
+        )
+    })
     .await
-    .with_context(|| format!("{program} timed out"))?
-    .with_context(|| format!("could not run {program}"))?;
-    if !output.status.success() {
+    .with_context(|| format!("{program} timed out"))
+    .and_then(|result| result);
+    let (stdout, stderr, status) = match result {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = child.start_kill();
+            // Reap failed helpers without letting cleanup stall the media loop.
+            // Caller cancellation still uses kill_on_drop and Tokio's reaper.
+            let _ = timeout(Duration::from_secs(1), child.wait()).await;
+            return Err(error);
+        }
+    };
+    if !status.success() {
         bail!(
             "{program} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&stderr).trim()
         );
     }
-    Ok(output.stdout)
+    Ok(stdout)
 }
 
 async fn volume(id: u64) -> Result<f64> {
-    let output = command("wpctl", &["get-volume", &id.to_string()]).await?;
+    let output = command(
+        "wpctl",
+        &["get-volume", &id.to_string()],
+        MAX_COMMAND_OUTPUT,
+    )
+    .await?;
     let text = std::str::from_utf8(&output)?;
     let value: f64 = text
         .strip_prefix("Volume:")
@@ -465,6 +525,7 @@ async fn set_volume(id: u64, volume: f64) -> Result<()> {
     command(
         "wpctl",
         &["set-volume", &id.to_string(), &format!("{volume:.4}")],
+        MAX_COMMAND_OUTPUT,
     )
     .await?;
     Ok(())
@@ -474,6 +535,7 @@ async fn set_profile(id: u64, index: u64) -> Result<()> {
     command(
         "wpctl",
         &["set-profile", &id.to_string(), &index.to_string()],
+        MAX_COMMAND_OUTPUT,
     )
     .await?;
     Ok(())
@@ -501,7 +563,7 @@ struct Snapshot(Vec<Value>);
 impl Snapshot {
     async fn read() -> Result<Self> {
         Ok(Self(serde_json::from_slice(
-            &command("pw-dump", &[]).await?,
+            &command("pw-dump", &[], MAX_SNAPSHOT_OUTPUT).await?,
         )?))
     }
 
@@ -649,6 +711,153 @@ mod tests {
     use std::io::BufRead;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
+
+    fn command_fixture() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audio-helper");
+        std::fs::write(
+            &path,
+            r#"#!/usr/bin/python3
+import os, pathlib, sys, threading, time
+pathlib.Path(sys.argv[4]).write_text(str(os.getpid()))
+def emit(fd, count):
+    while count:
+        count -= os.write(fd, b'x' * min(count, 8192))
+threads = [threading.Thread(target=emit, args=(fd, int(count)))
+           for fd, count in [(1, sys.argv[2]), (2, sys.argv[3])]]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+if sys.argv[1] == 'wait':
+    time.sleep(30)
+sys.exit(7 if sys.argv[1] == 'fail' else 0)
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        directory
+    }
+
+    async fn fixture_command(
+        directory: &std::path::Path,
+        mode: &str,
+        stdout: usize,
+        stderr: usize,
+        limit: usize,
+    ) -> Result<Vec<u8>> {
+        command(
+            directory.join("audio-helper").to_str().unwrap(),
+            &[
+                mode,
+                &stdout.to_string(),
+                &stderr.to_string(),
+                directory.join("pid").to_str().unwrap(),
+            ],
+            limit,
+        )
+        .await
+    }
+
+    async fn assert_helper_finished(directory: &std::path::Path, require_reaped: bool) {
+        let pid = std::fs::read_to_string(directory.join("pid")).unwrap();
+        let result = timeout(Duration::from_secs(2), async {
+            while let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+                // Cancellation retains Tokio's best-effort reaping; a zombie
+                // has exited and can no longer consume CPU or produce output.
+                if !require_reaped
+                    && status.lines().any(|line| {
+                        line.starts_with("State:") && line.split_whitespace().nth(1) == Some("Z")
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            result.is_ok(),
+            "audio helper did not exit with required cleanup: {:?}",
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        );
+    }
+
+    #[tokio::test]
+    async fn command_accepts_bounded_concurrent_output_and_reports_failures() {
+        let directory = command_fixture();
+        for limit in [MAX_COMMAND_OUTPUT, MAX_SNAPSHOT_OUTPUT] {
+            // Both streams exceed pipe capacity, and an exact byte-limit fit
+            // succeeds. A sequential drain would deadlock until the timeout.
+            let output =
+                fixture_command(directory.path(), "exit", limit, MAX_COMMAND_OUTPUT, limit)
+                    .await
+                    .unwrap();
+            assert_eq!(output.len(), limit);
+            assert!(output.iter().all(|byte| *byte == b'x'));
+            assert_helper_finished(directory.path(), true).await;
+        }
+        let error = fixture_command(directory.path(), "fail", 0, 7, MAX_COMMAND_OUTPUT)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("failed: xxxxxxx"));
+        assert_helper_finished(directory.path(), true).await;
+    }
+
+    #[tokio::test]
+    async fn command_rejects_output_overflow_and_reaps_helpers() {
+        let directory = command_fixture();
+        for (stdout, stderr, limit, stream) in [
+            (MAX_COMMAND_OUTPUT + 1, 0, MAX_COMMAND_OUTPUT, "stdout"),
+            (0, MAX_COMMAND_OUTPUT + 1, MAX_COMMAND_OUTPUT, "stderr"),
+            (MAX_SNAPSHOT_OUTPUT + 1, 0, MAX_SNAPSHOT_OUTPUT, "stdout"),
+            (
+                MAX_SNAPSHOT_OUTPUT,
+                MAX_SNAPSHOT_OUTPUT,
+                MAX_COMMAND_OUTPUT,
+                "",
+            ),
+        ] {
+            let error = fixture_command(directory.path(), "wait", stdout, stderr, limit)
+                .await
+                .unwrap_err();
+            let error = format!("{error:#}");
+            assert!(error.contains("exceeds"), "{error}");
+            assert!(error.contains(stream), "{error}");
+            assert_helper_finished(directory.path(), true).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn command_timeout_reaps_and_cancellation_kills_helpers() {
+        let directory = command_fixture();
+        let started = Instant::now();
+        let error = fixture_command(directory.path(), "wait", 0, 0, MAX_COMMAND_OUTPUT)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < AUDIO_TIMEOUT + Duration::from_secs(2));
+        assert_helper_finished(directory.path(), true).await;
+
+        std::fs::remove_file(directory.path().join("pid")).unwrap();
+        let root = directory.path().to_owned();
+        let task =
+            tokio::spawn(
+                async move { fixture_command(&root, "wait", 0, 0, MAX_COMMAND_OUTPUT).await },
+            );
+        timeout(Duration::from_secs(2), async {
+            while !std::fs::read_to_string(directory.path().join("pid"))
+                .is_ok_and(|pid| pid.parse::<u32>().is_ok())
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("audio helper did not start");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_helper_finished(directory.path(), false).await;
+    }
 
     #[test]
     fn both_out_debounce_cancels_transients_and_keeps_first_deadline() {
