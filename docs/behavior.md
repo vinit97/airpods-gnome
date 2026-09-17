@@ -14,7 +14,7 @@ state instead of separate earbuds and a case.
 | Ear Detection Off | Stops automatic playback control without resuming paused music. |
 | Ear Detection I | Removing either AirPod pauses playback; both must be in to resume. |
 | Ear Detection II | Removing both AirPods pauses playback; either may be reinserted to resume. |
-| Remove both AirPods | A 1.2-second settling period precedes pausing and releasing the audio profile, when Ear Detection is enabled and release is appropriate. |
+| Remove both AirPods | With Ear Detection enabled, cancels queued playback recovery immediately. A 1.2-second settling period precedes pausing and releasing the audio profile when appropriate. |
 | Reinsert AirPods | Once the ear condition and playback output are ready, resumes only players previously paused by the backend. |
 | Battery updates | Readings update independently. Unknown values show a dash; case readings may stay stale until the case transmits again. |
 | Use the AirPods microphone | Preserves the headset profile, including during muted calls. |

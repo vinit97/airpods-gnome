@@ -15,6 +15,7 @@ struct AdapterState {
     owners: HashSet<String>,
     calls: Vec<(String, String)>,
     filters: Vec<(String, String, bool)>,
+    failed_starts: usize,
 }
 
 struct TestAdapter(Arc<Mutex<AdapterState>>);
@@ -46,6 +47,12 @@ impl TestAdapter {
         let owner = header.sender().unwrap().to_string();
         let mut state = self.0.lock().unwrap();
         state.calls.push((owner.clone(), "StartDiscovery".into()));
+        if state.failed_starts > 0 {
+            state.failed_starts -= 1;
+            return Err(zbus::fdo::Error::Failed(
+                "Temporary discovery failure".into(),
+            ));
+        }
         if !state.owners.insert(owner) {
             return Err(zbus::fdo::Error::Failed(
                 "Discovery already started by this client".into(),
@@ -127,13 +134,23 @@ impl TestLogin {
 }
 
 async fn property_change(connection: &Connection, path: &str, changed: Properties) {
+    property_event(connection, path, "org.bluez.Device1", changed, Vec::new()).await;
+}
+
+async fn property_event(
+    connection: &Connection,
+    path: &str,
+    interface: &str,
+    changed: Properties,
+    invalidated: Vec<String>,
+) {
     connection
         .emit_signal(
             None::<&str>,
             path,
             "org.freedesktop.DBus.Properties",
             "PropertiesChanged",
-            &("org.bluez.Device1", changed, Vec::<String>::new()),
+            &(interface, changed, invalidated),
         )
         .await
         .unwrap();
@@ -177,6 +194,23 @@ async fn wait_scanning(state: &Arc<Mutex<AdapterState>>, owner: &str, expected: 
     })
     .await
     .expect("BlueZ discovery ownership did not settle");
+}
+
+async fn wait_name(device: &mut watch::Receiver<Option<Device>>, name: &str) {
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if device
+                .borrow_and_update()
+                .as_ref()
+                .is_some_and(|device| device.name == name)
+            {
+                break;
+            }
+            device.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("BlueZ monitor did not publish the updated device name");
 }
 
 fn advertisement(company: u16, bytes: Vec<u8>) -> Properties {
@@ -403,6 +437,100 @@ async fn discovery_scenario() {
         _ => panic!("Expected a BlueZ manufacturer-data advertisement"),
     }
 
+    // Frequent signal-strength and manufacturer-data updates still deliver every
+    // battery payload without publishing an unrelated device-selection change.
+    device.borrow_and_update();
+    for index in 0..32_u8 {
+        let mut changed = advertisement(0x004c, vec![index]);
+        changed.insert("RSSI".into(), (-40_i16).into());
+        property_change(&bluez, PODS, changed).await;
+    }
+    for index in 0..32_u8 {
+        match timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Event::Advertisement(address, bytes) => {
+                assert_eq!(address, "AA:BB:CC:DD:EE:FF");
+                assert_eq!(bytes, [index]);
+            }
+            _ => panic!("Expected every battery advertisement in the update burst"),
+        }
+    }
+    assert!(!device.has_changed().unwrap());
+
+    // Relevant changes after the burst must take effect before the 10-second
+    // refresh, including invalidated properties and the Name fallback for Alias.
+    pods.lock().unwrap().alias = "Updated device name".into();
+    property_change(
+        &bluez,
+        PODS,
+        HashMap::from([(
+            "Alias".into(),
+            Value::from("Updated device name").try_into().unwrap(),
+        )]),
+    )
+    .await;
+    wait_name(&mut device, "Updated device name").await;
+    property_event(
+        &bluez,
+        PODS,
+        "org.bluez.Device1",
+        HashMap::new(),
+        vec!["Alias".into()],
+    )
+    .await;
+    wait_name(&mut device, "Bluetooth headset").await;
+    property_change(
+        &bluez,
+        PODS,
+        HashMap::from([(
+            "Name".into(),
+            Value::from("Fallback device name").try_into().unwrap(),
+        )]),
+    )
+    .await;
+    wait_name(&mut device, "Fallback device name").await;
+    property_event(
+        &bluez,
+        PODS,
+        "org.bluez.Device1",
+        HashMap::new(),
+        vec!["UUIDs".into()],
+    )
+    .await;
+    wait_device(&mut device, None).await;
+    property_change(
+        &bluez,
+        PODS,
+        HashMap::from([(
+            "UUIDs".into(),
+            Value::from(vec![AAP_UUID]).try_into().unwrap(),
+        )]),
+    )
+    .await;
+    wait_device(&mut device, Some("AA:BB:CC:DD:EE:FF")).await;
+
+    property_event(
+        &bluez,
+        ADAPTER,
+        "org.bluez.Adapter1",
+        HashMap::new(),
+        vec!["Powered".into()],
+    )
+    .await;
+    wait_scanning(&adapter, &owner, false).await;
+    property_event(
+        &bluez,
+        ADAPTER,
+        "org.bluez.Adapter1",
+        HashMap::from([("Powered".into(), true.into())]),
+        Vec::new(),
+    )
+    .await;
+    wait_scanning(&adapter, &owner, true).await;
+
     // Stop/start only this client's discovery session, preserving another scanner.
     scan.send_replace(false);
     wait_scanning(&adapter, &owner, false).await;
@@ -432,7 +560,23 @@ async fn discovery_scenario() {
     scan.send_replace(false);
     sleep(Duration::from_millis(50)).await;
     assert_eq!(stop_count(), stops);
+    adapter.lock().unwrap().failed_starts = 1;
     scan.send_replace(true);
+    timeout(Duration::from_secs(3), async {
+        while adapter.lock().unwrap().failed_starts != 0 {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Discovery restart was not attempted");
+    // A failed start remains eligible for retry even on an otherwise irrelevant
+    // signal, rather than waiting for the periodic full refresh.
+    property_change(
+        &bluez,
+        PODS,
+        HashMap::from([("RSSI".into(), (-45_i16).into())]),
+    )
+    .await;
     wait_scanning(&adapter, &owner, true).await;
 
     // PrepareForSleep clears the active device and stops only our scan. Resume

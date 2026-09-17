@@ -388,60 +388,67 @@ async fn monitor(
     let mut scans = HashMap::<String, bool>::new();
     let mut sleeping = false;
     let mut timer = tokio::time::interval(Duration::from_secs(10));
+    let mut reconcile = true;
     loop {
-        let wanted = if sleeping {
-            None
-        } else {
-            let current = device.borrow().clone();
-            select_device(&cache, current.as_ref())
-        };
-        device.send_if_modified(|value| {
-            if *value == wanted {
-                false
+        if reconcile {
+            reconcile = false;
+            let wanted = if sleeping {
+                None
             } else {
-                *value = wanted;
-                true
-            }
-        });
-        let want_scan = *scan.borrow() && !sleeping;
-        for (path, interfaces) in &cache {
-            let Some(properties) = interfaces.get("org.bluez.Adapter1") else {
-                continue;
+                let current = device.borrow().clone();
+                select_device(&cache, current.as_ref())
             };
-            let powered = properties
-                .get("Powered")
-                .and_then(|v| bool::try_from(v).ok())
-                .unwrap_or(false);
-            let enabled = want_scan && powered;
-            if scans.get(path.as_str()) == Some(&enabled) {
-                continue;
-            }
-            let result = if enabled {
-                let proxy =
-                    Proxy::new(connection, "org.bluez", path.as_str(), "org.bluez.Adapter1")
-                        .await?;
-                let filter = HashMap::from([
-                    ("Transport", Value::from("le")),
-                    ("DuplicateData", Value::from(true)),
-                ]);
-                let _ = timeout(
-                    Duration::from_secs(2),
-                    proxy.call_method("SetDiscoveryFilter", &(filter,)),
-                )
-                .await;
-                adapter_call(connection, path.as_str(), "StartDiscovery").await
-            } else {
-                adapter_call(connection, path.as_str(), "StopDiscovery").await
-            };
-            if result.is_ok() || !enabled {
-                scans.insert(path.to_string(), enabled);
+            device.send_if_modified(|value| {
+                if *value == wanted {
+                    false
+                } else {
+                    *value = wanted;
+                    true
+                }
+            });
+            let want_scan = *scan.borrow() && !sleeping;
+            for (path, interfaces) in &cache {
+                let Some(properties) = interfaces.get("org.bluez.Adapter1") else {
+                    continue;
+                };
+                let powered = properties
+                    .get("Powered")
+                    .and_then(|v| bool::try_from(v).ok())
+                    .unwrap_or(false);
+                let enabled = want_scan && powered;
+                if scans.get(path.as_str()) == Some(&enabled) {
+                    continue;
+                }
+                let result = if enabled {
+                    let proxy =
+                        Proxy::new(connection, "org.bluez", path.as_str(), "org.bluez.Adapter1")
+                            .await?;
+                    let filter = HashMap::from([
+                        ("Transport", Value::from("le")),
+                        ("DuplicateData", Value::from(true)),
+                    ]);
+                    let _ = timeout(
+                        Duration::from_secs(2),
+                        proxy.call_method("SetDiscoveryFilter", &(filter,)),
+                    )
+                    .await;
+                    adapter_call(connection, path.as_str(), "StartDiscovery").await
+                } else {
+                    adapter_call(connection, path.as_str(), "StopDiscovery").await
+                };
+                if result.is_ok() || !enabled {
+                    scans.insert(path.to_string(), enabled);
+                } else {
+                    // Keep failed scan starts eligible for the next event or timer.
+                    reconcile = true;
+                }
             }
         }
         tokio::select! {
-            _=scan.changed()=>{},
-            _=timer.tick()=>{cache=objects(connection).await?;},
+            _=scan.changed()=>{reconcile=true;},
+            _=timer.tick()=>{cache=objects(connection).await?;reconcile=true;},
             message=sleep_messages.next()=>{
-                if let Some(Ok(message))=message && let Ok((value,))=message.body().deserialize::<(bool,)>() {sleeping=value;if !sleeping {cache=objects(connection).await?;}}
+                if let Some(Ok(message))=message && let Ok((value,))=message.body().deserialize::<(bool,)>() {sleeping=value;reconcile=true;if !sleeping {cache=objects(connection).await?;}}
             },
             message=messages.next()=>{
                 let message=message.context("BlueZ event stream closed")??;
@@ -451,6 +458,15 @@ async fn monitor(
                     "PropertiesChanged"=>{
                         let Some(path)=header.path() else {continue};
                         if let Ok((interface,changed,invalidated))=message.body().deserialize::<(String,Properties,Vec<String>)>() {
+                            // Battery advertisements and RSSI update the cache without
+                            // rescanning every device and adapter for each broadcast.
+                            reconcile |= changed.keys().chain(invalidated.iter()).any(|key| {
+                                match interface.as_str() {
+                                    "org.bluez.Device1" => matches!(key.as_str(), "Address" | "Alias" | "Name" | "Connected" | "UUIDs"),
+                                    "org.bluez.Adapter1" => key == "Powered",
+                                    _ => false,
+                                }
+                            });
                             let entry=cache.entry(path.to_owned().into()).or_default().entry(interface.clone()).or_default();
                             let advertisement=changed.contains_key("ManufacturerData");
                             entry.extend(changed);
@@ -462,12 +478,14 @@ async fn monitor(
                         if let Ok((path,interfaces))=message.body().deserialize::<(OwnedObjectPath,Interfaces)>() {
                             if let Some(properties)=interfaces.get("org.bluez.Device1") {emit_advertisement(properties,events).await;}
                             cache.entry(path).or_default().extend(interfaces);
+                            reconcile=true;
                         }
                     },
                     "InterfacesRemoved"=>{
                         if let Ok((path,names))=message.body().deserialize::<(OwnedObjectPath,Vec<String>)>() {
                             if let Some(interfaces)=cache.get_mut(&path) {for name in names {interfaces.remove(&name);}}
                             scans.remove(path.as_str());
+                            reconcile=true;
                         }
                     },
                     _=>{}

@@ -156,6 +156,10 @@ impl MediaController {
         }
         if let Some(action) = self.ears.update(left, right, Instant::now()) {
             self.apply_ears(action).await?;
+        } else if self.ears.both_out.is_some() {
+            // Removal supersedes reinsertion immediately; only release is delayed.
+            self.pending_resume = false;
+            self.profile_due = None;
         }
         Ok(())
     }
@@ -236,8 +240,12 @@ impl MediaController {
             self.profile_attempts = 0;
             self.pending_resume = action == EarAction::Resume && !self.paused.is_empty();
         }
+        // Recovery checks the current output and capture state on its next tick.
+        if action == EarAction::Resume {
+            return Ok(());
+        }
         let snapshot = Snapshot::read().await?;
-        if action != EarAction::Resume && snapshot.default_sink(&address).is_some() {
+        if snapshot.default_sink(&address).is_some() {
             self.pause_players().await?;
         }
         if action == EarAction::Release && !snapshot.capturing(&address) {
@@ -348,13 +356,14 @@ impl MediaController {
                     timeout(BUS_TIMEOUT, async {
                         // Unique owners prevent auto-playing a newly restarted application.
                         let owner: String = bus.call("GetNameOwner", &(name.as_str(),)).await?;
-                        let player = zbus::Proxy::new(
-                            session,
-                            owner.as_str(),
-                            "/org/mpris/MediaPlayer2",
-                            "org.mpris.MediaPlayer2.Player",
-                        )
-                        .await?;
+                        // A one-shot status check needs neither GetAll nor a subscription.
+                        let player = zbus::proxy::Builder::<zbus::Proxy<'_>>::new(session)
+                            .destination(owner.as_str())?
+                            .path("/org/mpris/MediaPlayer2")?
+                            .interface("org.mpris.MediaPlayer2.Player")?
+                            .cache_properties(zbus::proxy::CacheProperties::No)
+                            .build()
+                            .await?;
                         let status: String = player.get_property("PlaybackStatus").await?;
                         if status == "Playing" {
                             let _: () = player.call("Pause", &()).await?;
@@ -379,13 +388,13 @@ impl MediaController {
             let session = &self.bus;
             async move {
                 let result = timeout(BUS_TIMEOUT, async {
-                    let player = zbus::Proxy::new(
-                        session,
-                        owner.as_str(),
-                        "/org/mpris/MediaPlayer2",
-                        "org.mpris.MediaPlayer2.Player",
-                    )
-                    .await?;
+                    let player = zbus::proxy::Builder::<zbus::Proxy<'_>>::new(session)
+                        .destination(owner.as_str())?
+                        .path("/org/mpris/MediaPlayer2")?
+                        .interface("org.mpris.MediaPlayer2.Player")?
+                        .cache_properties(zbus::proxy::CacheProperties::No)
+                        .build()
+                        .await?;
                     let status: String = player.get_property("PlaybackStatus").await?;
                     if status == "Paused" {
                         let _: () = player.call("Play", &()).await?;
@@ -750,6 +759,7 @@ mod tests {
     struct TestPlayer {
         state: Arc<Mutex<String>>,
         calls: Arc<Mutex<Vec<String>>>,
+        metadata_reads: Arc<Mutex<usize>>,
     }
 
     #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
@@ -757,6 +767,12 @@ mod tests {
         #[zbus(property)]
         fn playback_status(&self) -> String {
             self.state.lock().unwrap().clone()
+        }
+
+        #[zbus(property)]
+        fn metadata(&self) -> std::collections::HashMap<String, zbus::zvariant::OwnedValue> {
+            *self.metadata_reads.lock().unwrap() += 1;
+            std::collections::HashMap::new()
         }
 
         fn pause(&mut self) {
@@ -774,6 +790,7 @@ mod tests {
         let player = TestPlayer {
             state: Arc::new(Mutex::new(status.into())),
             calls: Arc::default(),
+            metadata_reads: Arc::default(),
         };
         let connection = zbus::connection::Builder::session()
             .unwrap()
@@ -810,6 +827,8 @@ if (root / 'fail').exists():
 if (root / 'hang').exists():
     time.sleep(30)
 if pathlib.Path(__file__).name == 'pw-dump':
+    with (root / 'snapshot-reads').open('a') as out:
+        out.write('read\n')
     print((root / 'snapshot.json').read_text())
 else:
     args = sys.argv[1:]
@@ -840,6 +859,7 @@ else:
         )
         .unwrap();
         std::fs::write(directory.path().join("volume"), "0.75").unwrap();
+        std::fs::write(directory.path().join("snapshot-reads"), "").unwrap();
         let mut bus = Bus(std::process::Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])
             .stdout(std::process::Stdio::piped())
@@ -880,6 +900,12 @@ else:
         let directory = std::path::PathBuf::from(
             std::env::var_os("AIRPODS_MEDIA_IO_ROOT").expect("requires isolated parent test"),
         );
+        let snapshot_reads = || {
+            std::fs::read_to_string(directory.join("snapshot-reads"))
+                .unwrap()
+                .lines()
+                .count()
+        };
         let (playing, service) = player("org.mpris.MediaPlayer2.AirPodsTest", "Playing").await;
         let (manual, _manual_service) =
             player("org.mpris.MediaPlayer2.AirPodsManual", "Paused").await;
@@ -892,20 +918,61 @@ else:
         controller.update_ears(true, false).await.unwrap();
         assert_eq!(*playing.state.lock().unwrap(), "Paused");
         assert_eq!(controller.paused.len(), 1);
+        assert_eq!(
+            *playing.metadata_reads.lock().unwrap(),
+            0,
+            "pausing must not fetch unrelated track metadata"
+        );
         controller.update_ears(true, false).await.unwrap();
         assert_eq!(*playing.calls.lock().unwrap(), ["Pause"]);
+        let reads_before_resume = snapshot_reads();
         controller.update_ears(true, true).await.unwrap();
+        assert_eq!(
+            snapshot_reads(),
+            reads_before_resume,
+            "reinsertion only schedules recovery; its fresh snapshot is read on tick"
+        );
+        assert_eq!(*playing.state.lock().unwrap(), "Paused");
         controller.tick().await.unwrap();
+        assert_eq!(snapshot_reads(), reads_before_resume + 1);
         assert_eq!(*playing.state.lock().unwrap(), "Playing");
         assert_eq!(*playing.calls.lock().unwrap(), ["Pause", "Play"]);
+        assert_eq!(
+            *playing.metadata_reads.lock().unwrap(),
+            0,
+            "resuming must not fetch unrelated track metadata"
+        );
         assert!(
             manual.calls.lock().unwrap().is_empty(),
             "never resume a player the user paused"
         );
 
+        // Removal supersedes recovery even during the both-out settling period.
+        controller.update_ears(true, false).await.unwrap();
+        controller.update_ears(true, true).await.unwrap();
+        controller.update_ears(false, false).await.unwrap();
+        let reads_before_removal = snapshot_reads();
+        controller.tick().await.unwrap();
+        assert_eq!(snapshot_reads(), reads_before_removal);
+        assert_eq!(
+            *playing.state.lock().unwrap(),
+            "Paused",
+            "do not resume queued playback after both earbuds are removed again"
+        );
+        controller.update_ears(true, true).await.unwrap();
+        controller.tick().await.unwrap();
+        assert_eq!(*playing.state.lock().unwrap(), "Playing");
+
         controller.update_ears(true, false).await.unwrap();
         *playing.state.lock().unwrap() = "Stopped".into();
+        std::fs::write(directory.join("fail"), "").unwrap();
         controller.update_ears(true, true).await.unwrap();
+        assert!(controller.tick().await.is_err());
+        assert!(controller.pending_resume);
+        assert!(controller.profile_due.is_some());
+        assert_eq!(*playing.state.lock().unwrap(), "Stopped");
+        std::fs::remove_file(directory.join("fail")).unwrap();
+        controller.profile_due = Some(Instant::now());
         controller.tick().await.unwrap();
         assert_eq!(
             *playing.state.lock().unwrap(),
@@ -948,6 +1015,13 @@ else:
             serde_json::from_slice(&std::fs::read(directory.join("snapshot.json")).unwrap())
                 .unwrap();
         assert_eq!(snapshot[0]["info"]["params"]["Profile"][0]["name"], "off");
+        // II also cancels queued profile recovery if its ear condition is lost.
+        controller.update_ears(true, false).await.unwrap();
+        controller.update_ears(false, false).await.unwrap();
+        let reads_before_removal = snapshot_reads();
+        controller.tick().await.unwrap();
+        assert_eq!(snapshot_reads(), reads_before_removal);
+        assert_eq!(*replacement.state.lock().unwrap(), "Paused");
         controller.update_ears(true, false).await.unwrap();
         controller.tick().await.unwrap();
         controller.profile_due = Some(Instant::now());
