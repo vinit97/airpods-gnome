@@ -20,6 +20,15 @@ struct AdapterState {
 
 struct TestAdapter(Arc<Mutex<AdapterState>>);
 
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "org.bluez.Error")]
+enum BluezError {
+    #[zbus(error)]
+    ZBus(zbus::Error),
+    Failed(String),
+    InProgress(String),
+}
+
 #[zbus::interface(name = "org.bluez.Adapter1")]
 impl TestAdapter {
     #[zbus(property)]
@@ -43,19 +52,18 @@ impl TestAdapter {
             .push((owner, transport, duplicate));
     }
 
-    fn start_discovery(&self, #[zbus(header)] header: Header<'_>) -> zbus::fdo::Result<()> {
+    fn start_discovery(&self, #[zbus(header)] header: Header<'_>) -> Result<(), BluezError> {
         let owner = header.sender().unwrap().to_string();
         let mut state = self.0.lock().unwrap();
         state.calls.push((owner.clone(), "StartDiscovery".into()));
         if state.failed_starts > 0 {
             state.failed_starts -= 1;
-            return Err(zbus::fdo::Error::Failed(
-                "Temporary discovery failure".into(),
-            ));
+            return Err(BluezError::Failed("Temporary discovery failure".into()));
         }
+        // BlueZ reports a client's second session as busy.
         if !state.owners.insert(owner) {
-            return Err(zbus::fdo::Error::Failed(
-                "Discovery already started by this client".into(),
+            return Err(BluezError::InProgress(
+                "Operation already in progress".into(),
             ));
         }
         Ok(())
@@ -353,6 +361,7 @@ async fn discovery_scenario() {
         .unwrap();
     let external_owner = external_scanner.unique_name().unwrap().to_string();
     let connection = Connection::session().await.unwrap();
+    let restarted_connection = connection.clone();
     let owner = connection.unique_name().unwrap().to_string();
     let (device_tx, mut device) = watch::channel(None);
     let (events_tx, mut events) = mpsc::channel(16);
@@ -607,6 +616,48 @@ async fn discovery_scenario() {
         .await
         .unwrap();
     wait_device(&mut device, Some("AA:BB:CC:DD:EE:FF")).await;
+
+    // A monitor restarted after an error reuses the connection, so BlueZ still
+    // holds its discovery session. Ordinary signals must not retry the start.
+    monitor.abort();
+    let _ = monitor.await;
+    drop(scan);
+    let start_count = || {
+        adapter
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(caller, method)| caller == &owner && method == "StartDiscovery")
+            .count()
+    };
+    let starts = start_count();
+    let (device_tx, mut device) = watch::channel(None);
+    let (events_tx, _events) = mpsc::channel(64);
+    let (scan, scan_rx) = watch::channel(true);
+    let monitor = tokio::spawn(async move {
+        super::monitor(&restarted_connection, &device_tx, &events_tx, scan_rx)
+            .await
+            .unwrap();
+    });
+    wait_device(&mut device, Some("AA:BB:CC:DD:EE:FF")).await;
+    timeout(Duration::from_secs(3), async {
+        while start_count() == starts {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Restarted monitor did not reconcile discovery");
+    for strength in 0..8_i16 {
+        property_change(
+            &bluez,
+            PODS,
+            HashMap::from([("RSSI".into(), (-50 - strength).into())]),
+        )
+        .await;
+    }
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(start_count(), starts + 1);
 
     scan.send_replace(false);
     wait_scanning(&adapter, &owner, false).await;

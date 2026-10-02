@@ -82,8 +82,8 @@ impl Default for Status {
             model_int: 0,
             is_pro_series: false,
             is_headset: false,
-            supports_noise_off: true,
-            supports_noise_control: true,
+            supports_noise_off: false,
+            supports_noise_control: false,
             supports_adaptive: false,
             supports_conversational_awareness: false,
             model_number: String::new(),
@@ -108,8 +108,10 @@ impl Status {
         self.model_name = model_name(self.model_int).to_owned();
         self.is_pro_series = matches!(self.model_int, 4 | 5 | 6 | 11);
         self.is_headset = matches!(self.model_int, 7 | 8 | 12);
-        self.supports_noise_off = self.model_int != 11;
-        self.supports_noise_control = !matches!(self.model_int, 1 | 2 | 3 | 9);
+        // An unknown model, including one awaiting metadata, gets no listening controls.
+        let known = self.model_int != 0;
+        self.supports_noise_off = known && self.model_int != 11;
+        self.supports_noise_control = known && !matches!(self.model_int, 1 | 2 | 3 | 9);
         self.supports_adaptive = matches!(self.model_int, 5 | 6 | 10 | 11 | 12);
         self.supports_conversational_awareness = self.supports_adaptive;
     }
@@ -396,6 +398,7 @@ mod tests {
             ("A3056", true, true, false, true),
             ("A3454", true, true, true, true),
             ("A2096", true, false, true, true),
+            ("A9999", false, false, false, false),
         ] {
             s.set_model_number(number);
             assert_eq!(

@@ -6,7 +6,7 @@ state instead of separate earbuds and a case.
 | Action or event | Result |
 | --- | --- |
 | Connect or disconnect | The indicator appears once the control connection is ready and hides on disconnect. The backend watches for reconnection. |
-| Select a listening mode | Updates immediately; a matching AirPods report confirms it. Unsupported modes are hidden. Scroll or right-click the indicator to cycle modes. |
+| Select a listening mode | Updates immediately; a matching AirPods report confirms it. Unsupported modes are hidden, and no modes are offered until the model is identified. Scroll or right-click the indicator to cycle modes. |
 | Change controls quickly | The latest queued choice wins; stale replies cannot undo it. The Adaptive slider follows the pointer and combines intermediate changes. |
 | A command fails or times out | The control quietly returns to the reported value. Technical details stay in logs. |
 | A status snapshot is malformed or exceeds 64 KiB | Hides the indicator until a valid snapshot arrives. |

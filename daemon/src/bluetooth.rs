@@ -131,9 +131,10 @@ impl Bluetooth {
         let event_tx = events.clone();
         tasks.spawn(async move {
             loop {
+                // Keep the selected device: a transient D-Bus failure must not
+                // close a working control link. The restarted monitor reconciles it.
                 if let Err(error) = monitor(&conn, &device_tx, &event_tx, scan_rx.clone()).await {
                     eprintln!("Bluetooth discovery: {error}");
-                    device_tx.send_replace(None);
                 }
                 if device_tx.is_closed() {
                     break;
@@ -366,6 +367,15 @@ async fn adapter_call(connection: &Connection, path: &str, method: &str) -> Resu
     Ok(())
 }
 
+/// BlueZ allows one discovery session per client. A monitor restarted on the
+/// same connection finds its earlier session still active.
+fn already_discovering(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<zbus::Error>(),
+        Some(zbus::Error::MethodError(name, _, _)) if name.as_str() == "org.bluez.Error.InProgress"
+    )
+}
+
 async fn monitor(
     connection: &Connection,
     device: &watch::Sender<Option<Device>>,
@@ -436,7 +446,7 @@ async fn monitor(
                 } else {
                     adapter_call(connection, path.as_str(), "StopDiscovery").await
                 };
-                if result.is_ok() || !enabled {
+                if !enabled || result.as_ref().map_or_else(already_discovering, |()| true) {
                     scans.insert(path.to_string(), enabled);
                 } else {
                     // Keep failed scan starts eligible for the next event or timer.
