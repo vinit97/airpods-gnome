@@ -651,8 +651,13 @@ impl Snapshot {
             .iter()
             .find(|object| integer(&object["id"]) == Some(id))?;
         let parameters = &device["info"]["params"];
-        let profiles = parameters["EnumProfile"].as_array()?;
-        let selected = profiles
+        let active: HashSet<u64> = parameters["Profile"]
+            .as_array()?
+            .iter()
+            .filter_map(|profile| integer(&profile["index"]))
+            .collect();
+        let candidates = parameters["EnumProfile"]
+            .as_array()?
             .iter()
             .filter(|profile| {
                 let name = profile["name"].as_str().unwrap_or_default();
@@ -662,28 +667,32 @@ impl Snapshot {
                     } else {
                         name.starts_with("a2dp-sink")
                     }
-            })
-            .max_by_key(|profile| {
-                (
-                    codec_rank(profile),
-                    integer(&profile["priority"]).unwrap_or(0),
-                )
+            });
+        // Keep a playback codec chosen in Settings; AAC is only the default.
+        let selected = candidates
+            .clone()
+            .find(|profile| integer(&profile["index"]).is_some_and(|i| active.contains(&i)))
+            .or_else(|| {
+                candidates.max_by_key(|profile| {
+                    (
+                        codec_rank(profile),
+                        integer(&profile["priority"]).unwrap_or(0),
+                    )
+                })
             })?;
         let index = integer(&selected["index"])?;
         Some((
             id,
             Profile {
                 index,
-                active: parameters["Profile"]
-                    .as_array()?
-                    .iter()
-                    .any(|profile| integer(&profile["index"]) == Some(index)),
+                active: active.contains(&index),
             },
         ))
     }
 }
 
-fn codec_rank(profile: &Value) -> u16 {
+/// AirPods are designed around AAC; prefer it over SBC variants.
+fn codec_rank(profile: &Value) -> u8 {
     let name = profile["name"]
         .as_str()
         .unwrap_or_default()
@@ -693,12 +702,12 @@ fn codec_rank(profile: &Value) -> u16 {
         .as_str()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if name.ends_with("sbc-xq") || description.contains("codec sbc-xq") {
-        453
+    if name.ends_with("aac") || description.contains("codec aac") {
+        3
+    } else if name.ends_with("sbc-xq") || description.contains("codec sbc-xq") {
+        2
     } else if name.ends_with("sbc") || description.contains("codec sbc") {
-        328
-    } else if name.ends_with("aac") || description.contains("codec aac") {
-        256
+        1
     } else {
         0
     }
@@ -928,14 +937,22 @@ sys.exit(7 if sys.argv[1] == 'fail' else 0)
     }
 
     #[test]
-    fn profile_selection_preserves_codec_order_and_does_not_reapply_active_profile() {
-        let snapshot = fixture();
+    fn profile_selection_defaults_to_aac_and_keeps_a_chosen_playback_codec() {
+        let mut snapshot = fixture();
+        // A manually selected SBC-XQ profile is already active and is kept.
         let (id, profile) = snapshot.profile("AABBCCDDEEFF", false).unwrap();
         assert_eq!(id, 1);
         assert_eq!(profile.index, 12);
         assert!(profile.active);
         assert_eq!(snapshot.profile("AABBCCDDEEFF", true).unwrap().1.index, 0);
         assert!(snapshot.profile("AABBCCDDEE00", false).is_none());
+        // Leaving the released or headset profile restores playback with AAC.
+        for current in [0, 13] {
+            snapshot.0[0]["info"]["params"]["Profile"] = json!([{ "index": current }]);
+            let (_, profile) = snapshot.profile("AABBCCDDEEFF", false).unwrap();
+            assert_eq!(profile.index, 10);
+            assert!(!profile.active);
+        }
     }
 
     #[test]

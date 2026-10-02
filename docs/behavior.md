@@ -16,7 +16,7 @@ state instead of separate earbuds and a case.
 | Ear Detection I | Removing either AirPod pauses playback; both must be in to resume. |
 | Ear Detection II | Removing both AirPods pauses playback; either may be reinserted to resume. |
 | Remove both AirPods | With Ear Detection enabled, cancels queued playback recovery immediately. A 1.2-second settling period precedes pausing and releasing the audio profile when appropriate. |
-| Reinsert AirPods | Once the ear condition and playback output are ready, resumes only players previously paused by the backend. |
+| Reinsert AirPods | Once the ear condition and playback output are ready, resumes only players previously paused by the backend. Restoring playback selects the AAC codec unless another A2DP codec is already active. |
 | Battery updates | Readings update independently. Unknown values show a dash; case readings may stay stale until the case transmits again. |
 | Use the AirPods microphone | Preserves the headset profile, including during muted calls. |
 | Restart or reconnect | Retains Ear Detection. Conversation Awareness and Adaptive preferences are remembered, but live reports take precedence. Listening mode comes from the AirPods. |
